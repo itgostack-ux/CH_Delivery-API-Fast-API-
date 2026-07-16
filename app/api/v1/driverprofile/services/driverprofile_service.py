@@ -42,3 +42,21 @@ class DriverProfileService:
                 "total_deliveries": int(driver["custom_total_deliveries"] or 0)
             }
         }
+
+    @staticmethod
+    def register_device(request):
+
+        result = DriverProfileRepository.register_device(
+            driver=request.driver,
+            driver_name=request.driver_name,
+            user=request.user,
+            platform=request.platform,
+            app_version=request.app_version,
+            device_id=request.device_id,
+            fcm_token=request.fcm_token
+        )
+
+        return {
+            "success": result.get("success", True),
+            "message": result.get("message", "Device Registered")
+        }
