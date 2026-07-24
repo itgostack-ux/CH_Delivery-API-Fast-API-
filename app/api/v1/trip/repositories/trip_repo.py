@@ -209,3 +209,54 @@ class TripRepository:
 
         finally:
             conn.close()
+    @staticmethod
+    def get_notifications(email):
+
+        conn = get_connection()
+
+        try:
+            with conn.cursor() as cursor:
+
+                cursor.execute("""
+                SELECT
+                    name,
+                    creation,
+                    subject,
+                    email_content,
+                    document_type,
+                    document_name,
+                    `read`
+                FROM `tabNotification Log`
+                WHERE for_user = %s
+                  AND document_type = 'CH Logistics Trip'
+                ORDER BY creation DESC
+            """, (email,))
+
+            return cursor.fetchall()
+
+        finally:
+         conn.close()
+
+    @staticmethod
+    def mark_notification_read(notification_name):
+
+        conn = get_connection()
+
+        try:
+            with conn.cursor() as cursor:
+
+                cursor.execute("""
+                UPDATE `tabNotification Log`
+                SET `read` = 1
+                WHERE name = %s
+            """, (notification_name,))
+
+            conn.commit()
+
+            return {
+                "success": True,
+                "message": "Notification marked as read"
+            }
+
+        finally:
+            conn.close()

@@ -53,3 +53,8 @@ class TripService:
             request.latitude,
             request.longitude
         )
+    def get_notifications(self, email):
+        return self.repo.get_notifications(email)
+
+    def mark_notification_read(self, notification_name):
+        return self.repo.mark_notification_read(notification_name)
