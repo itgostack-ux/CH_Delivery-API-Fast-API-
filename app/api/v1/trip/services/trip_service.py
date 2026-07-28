@@ -1,7 +1,12 @@
 from ..repositories.trip_repo import TripRepository
 from ..schemas.trip_schema import AcceptStartTripRequest
-
-
+from ..schemas.trip_schema import (
+    AcceptStartTripRequest,
+    ScanPickupQRRequest
+)
+from ..schemas.trip_schema import UploadPickupPhotoRequest
+from ..schemas.trip_schema import ConfirmDeliveryRequest
+from ..schemas.trip_schema import RequestDeliveryOTPRequest
 class TripService:
 
     def __init__(self):
@@ -58,3 +63,49 @@ class TripService:
 
     def mark_notification_read(self, notification_name):
         return self.repo.mark_notification_read(notification_name)
+
+    def get_accept_trip_details(self, trip_id):
+        return self.repo.get_accept_trip_details(trip_id)
+    
+    def scan_pickup_qr(self, request: ScanPickupQRRequest):
+
+        return self.repo.scan_pickup_qr(
+        request.tripId,
+        request.driverId,
+        request.pickupToken,
+        request.latitude,
+        request.longitude
+    )
+    def upload_pickup_photo(self, request: UploadPickupPhotoRequest):
+
+        return self.repo.upload_pickup_photo(
+        request.manifestId,
+        request.photo,
+        request.latitude,
+        request.longitude,
+        request.notes
+    )
+
+    def confirm_delivery(self, request: ConfirmDeliveryRequest):
+
+        return self.repo.confirm_delivery(
+        request.tripId,
+        request.manifestId,
+        request.driverId,
+        request.deliveryToken,
+        request.otp,
+        request.receiverName,
+        request.deliveryPhoto,
+        request.notes,
+        request.latitude,
+        request.longitude
+    )
+    def request_delivery_otp(
+    self,
+    request: RequestDeliveryOTPRequest
+    ):
+        return self.repo.request_delivery_otp(
+            request.manifestId
+        )   
+   
+    
