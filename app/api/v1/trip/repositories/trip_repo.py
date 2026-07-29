@@ -265,147 +265,134 @@ class TripRepository:
 
     
 
-
-
-
-
-
-
-
-
-
-
     @staticmethod
     def scan_pickup_qr(
-        trip_id,
-        driver_id,
-        pickup_token,
-        latitude,
-        longitude
-    ):
-    
+    trip_id,
+    driver_id,
+    pickup_token,
+    latitude,
+    longitude
+):
+
         conn = get_connection()
-    
+
         try:
             with conn.cursor() as cursor:
-    
-                # -----------------------------------------
-                # Validate Trip
-                # -----------------------------------------
+
+            # -----------------------------------------
+            # Validate Trip
+            # -----------------------------------------
                 cursor.execute("""
-                    SELECT
-                        name,
-                        status,
-                        driver
-                    FROM `tabCH Logistics Trip`
-                    WHERE
-                        name=%s
-                        AND driver=%s
-                """, (
-                    trip_id,
-                    driver_id
-                ))
-    
-                trip = cursor.fetchone()
-    
-                if not trip:
-                    return {
-                        "success": False,
-                        "message": "Trip not found or not assigned to this driver."
-                    }
-    
-                if trip["status"] not in ("Assigned", "Accepted"):
-                    return {
-                        "success": False,
-                        "message": f"Pickup QR cannot be scanned because trip status is '{trip['status']}'."
-                    }
-    
-                # -----------------------------------------
-                # Validate Pickup Stop
-                # -----------------------------------------
-                cursor.execute("""
-                    SELECT
-                        name,
-                        pickup_token,
-                        pickup_scanned_at,
-                        status
-                    FROM `tabCH Logistics Trip Stop`
-                    WHERE
-                        parent=%s
-                        AND stop_type='Pickup'
-                    LIMIT 1
-                """, (trip_id,))
-    
-                stop = cursor.fetchone()
-    
-                if not stop:
-                    return {
-                        "success": False,
-                        "message": "Pickup stop not found."
-                    }
-    
-                # -----------------------------------------
-                # Validate Pickup Token
-                # -----------------------------------------
-                if stop["pickup_token"] != pickup_token:
-                    return {
-                        "success": False,
-                        "message": "Invalid Pickup QR."
-                    }
-    
-                # -----------------------------------------
-                # Already Scanned
-                # -----------------------------------------
-                if stop["pickup_scanned_at"]:
-                    return {
-                        "success": False,
-                        "message": "Pickup QR has already been scanned."
-                    }
-    
-                # -----------------------------------------
-                # Update Pickup Stop
-                # -----------------------------------------
-                cursor.execute("""
-                    UPDATE `tabCH Logistics Trip Stop`
-                    SET
-                        pickup_scanned_at = NOW(),
-                        pickup_scanned_by = %s,
-                        gps_lat = %s,
-                        gps_lng = %s,
-                        ata = NOW(),
-                        status = 'Completed',
-                        modified = NOW()
-                    WHERE
-                        name = %s
-                """, (
-                    driver_id,
-                    latitude,
-                    longitude,
-                    stop["name"]
-                ))
-    
-                conn.commit()
-    
+                SELECT
+                    name,
+                    status,
+                    driver
+                FROM `tabCH Logistics Trip`
+                WHERE
+                    name=%s
+                    AND driver=%s
+            """, (
+                trip_id,
+                driver_id
+            ))
+
+            trip = cursor.fetchone()
+
+            if not trip:
                 return {
-                    "success": True,
-                    "message": "Pickup QR scanned successfully.",
-                    "tripId": trip_id,
-                    "driverId": driver_id,
-                    "pickupStopId": stop["name"],
-                    "pickupVerified": True
+                    "success": False,
+                    "message": "Trip not found or not assigned to this driver."
                 }
-    
+
+            if trip["status"] not in ("Assigned", "Accepted"):
+                return {
+                    "success": False,
+                    "message": f"Pickup QR cannot be scanned because trip status is '{trip['status']}'."
+                }
+
+            # -----------------------------------------
+            # Validate Pickup Stop
+            # -----------------------------------------
+            cursor.execute("""
+                SELECT
+                    name,
+                    pickup_token,
+                    pickup_scanned_at,
+                    status
+                FROM `tabCH Logistics Trip Stop`
+                WHERE
+                    parent=%s
+                    AND stop_type='Pickup'
+                LIMIT 1
+            """, (trip_id,))
+
+            stop = cursor.fetchone()
+
+            if not stop:
+                return {
+                    "success": False,
+                    "message": "Pickup stop not found."
+                }
+
+            if stop["pickup_token"] != pickup_token:
+                return {
+                    "success": False,
+                    "message": "Invalid Pickup QR."
+                }
+
+            if stop["pickup_scanned_at"]:
+                return {
+                    "success": False,
+                    "message": "Pickup QR has already been scanned."
+                }
+
+            # Logged-in ERP User
+            scanned_by = frappe.session.user
+
+            # -----------------------------------------
+            # Update Pickup Stop
+            # -----------------------------------------
+            cursor.execute("""
+                UPDATE `tabCH Logistics Trip Stop`
+                SET
+                    pickup_scanned_at = NOW(),
+                    pickup_scanned_by = %s,
+                    gps_lat = %s,
+                    gps_lng = %s,
+                    ata = NOW(),
+                    status = 'Completed',
+                    modified = NOW()
+                WHERE
+                    name = %s
+            """, (
+                scanned_by,
+                latitude,
+                longitude,
+                stop["name"]
+            ))
+
+            conn.commit()
+
+            return {
+                "success": True,
+                "message": "Pickup QR scanned successfully.",
+                "tripId": trip_id,
+                "driverId": driver_id,
+                "pickupStopId": stop["name"],
+                "pickupVerified": True
+            }
+
         except Exception as e:
-    
+
             conn.rollback()
-    
+
             return {
                 "success": False,
                 "message": str(e)
             }
-    
         finally:
             conn.close()
+            
     @staticmethod
     def upload_pickup_photo(
         manifest_id,
@@ -871,6 +858,7 @@ class TripRepository:
 
         finally:
             conn.close()
+            
     @staticmethod
     def confirm_start_trip(
         trip_id,
@@ -926,7 +914,7 @@ class TripRepository:
                         "message": "Trip has already been closed."
                     }
 
-                if trip["status"] not in ("Assigned", "Accepted"):
+                if trip["status"] not in ("Assigned"):
                     return {
                         "success": False,
                         "message": f"Trip cannot be started because status is '{trip['status']}'."
