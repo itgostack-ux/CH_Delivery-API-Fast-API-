@@ -1,20 +1,18 @@
 from pydantic import BaseModel
 from typing import Optional
 from pydantic import BaseModel
+from pydantic import BaseModel
 
 class TripResponse(BaseModel):
     tripId: int
     tripNo: str
     driver: str
 
-class AcceptStartTripRequest(BaseModel):
+from pydantic import BaseModel
+
+class AcceptTripRequest(BaseModel):
     tripId: str
     driverId: str
-    latitude: float
-    longitude: float
-    photo: Optional[str] = None
-    notes: Optional[str] = None
-
 
 class ScanPickupQRRequest(BaseModel):
     tripId: str
@@ -50,3 +48,18 @@ class ConfirmDeliveryRequest(BaseModel):
 
 class RequestDeliveryOTPRequest(BaseModel):
     manifestId: str
+
+
+class ConfirmStartTripRequest(BaseModel):
+    tripId: str
+    driverId: str
+    latitude: float
+    longitude: float
+from pydantic import BaseModel
+from typing import Optional
+
+class RejectTripRequest(BaseModel):
+    tripId: str
+    driverId: str
+    reason: str
+    remarks: Optional[str] = None

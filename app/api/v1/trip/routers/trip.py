@@ -1,12 +1,16 @@
 from fastapi import APIRouter
 from ..schemas.trip_schema import UploadPickupPhotoRequest
 from ..services.trip_service import TripService
-from ..schemas.trip_schema import AcceptStartTripRequest
+from ..schemas.trip_schema import AcceptTripRequest
+from ..schemas.trip_schema import ConfirmStartTripRequest
 from ..schemas.trip_schema import ConfirmDeliveryRequest
 from ..schemas.trip_schema import ConfirmDeliveryRequest
+from ..schemas.trip_schema import RejectTripRequest
+
+
 from ..schemas.trip_schema import RequestDeliveryOTPRequest
 from ..schemas.trip_schema import (
-    AcceptStartTripRequest,
+    AcceptTripRequest,
     ScanPickupQRRequest
 )
 router = APIRouter()
@@ -24,9 +28,9 @@ def get_notifications(email: str):
     return service.get_notifications(email)
 
 
-@router.post("/accept-start-trip")
-def accept_start_trip(request: AcceptStartTripRequest):
-    return service.accept_start_trip(request)
+@router.post("/accept-trip")
+def accept_trip(request: AcceptTripRequest):
+    return service.accept_trip(request)
 
 @router.put("/notification/read/{notification_name}")
 def mark_notification_read(notification_name: str):
@@ -53,3 +57,11 @@ def request_delivery_otp(
     request: RequestDeliveryOTPRequest
 ):
     return service.request_delivery_otp(request)
+
+@router.post("/confirm-start-trip")
+def confirm_start_trip(request: ConfirmStartTripRequest):
+    return service.confirm_start_trip(request)
+
+@router.post("/reject-trip")
+def reject_trip(request: RejectTripRequest):
+    return service.reject_trip(request)

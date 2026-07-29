@@ -1,8 +1,9 @@
 from ..repositories.trip_repo import TripRepository
-from ..schemas.trip_schema import AcceptStartTripRequest
+from ..schemas.trip_schema import AcceptTripRequest
 from ..schemas.trip_schema import (
-    AcceptStartTripRequest,
-    ScanPickupQRRequest
+    AcceptTripRequest,
+    ScanPickupQRRequest,
+    ConfirmStartTripRequest
 )
 from ..schemas.trip_schema import UploadPickupPhotoRequest
 from ..schemas.trip_schema import ConfirmDeliveryRequest
@@ -50,14 +51,13 @@ class TripService:
             }
         }
 
-    def accept_start_trip(self, request: AcceptStartTripRequest):
+    def accept_trip(self, request: AcceptTripRequest):
 
-        return self.repo.accept_start_trip(
+        return self.repo.accept_trip(
             request.tripId,
-            request.driverId,
-            request.latitude,
-            request.longitude
+            request.driverId
         )
+
     def get_notifications(self, email):
         return self.repo.get_notifications(email)
 
@@ -108,4 +108,19 @@ class TripService:
             request.manifestId
         )   
    
-    
+    def confirm_start_trip(self, request: ConfirmStartTripRequest):
+
+       return self.repo.confirm_start_trip(
+        request.tripId,
+        request.driverId,
+        request.latitude,
+        request.longitude
+    )
+
+    def reject_trip(self, request):
+        return self.repo.reject_trip(
+        request.tripId,
+        request.driverId,
+        request.reason,
+        request.remarks
+    )
