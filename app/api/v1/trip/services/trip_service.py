@@ -124,3 +124,33 @@ class TripService:
         request.reason,
         request.remarks
     )
+    def get_exception_types(self):
+        return self.repo.get_exception_types()
+    def get_exception_severity(self):
+        return self.repo.get_exception_severity()
+    def report_exception(self, request):
+        return self.repo.report_exception(
+        request.tripId,
+        request.driverId,
+        request.exceptionType,
+        request.severity,
+        request.stopSequence,
+        request.remarks,
+        request.photo
+      )
+    def scan_delivery_qr(self, request):
+        return self.repo.scan_delivery_qr(
+        request.tripId,
+        request.driverId,
+        request.deliveryToken,
+        request.latitude,
+        request.longitude
+       )
+    def upload_delivery_photo(self, request):
+        return self.repo.upload_delivery_photo(
+        request.manifestId,
+        request.photo,
+        request.latitude,
+        request.longitude,
+        request.notes,
+    )

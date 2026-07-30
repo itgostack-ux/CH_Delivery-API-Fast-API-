@@ -11,7 +11,11 @@ from ..schemas.trip_schema import RejectTripRequest
 from ..schemas.trip_schema import RequestDeliveryOTPRequest
 from ..schemas.trip_schema import (
     AcceptTripRequest,
-    ScanPickupQRRequest
+    ScanPickupQRRequest,
+    ReportExceptionRequest,
+    ScanDeliveryQrRequest,
+    UploadDeliveryPhotoRequest
+    
 )
 router = APIRouter()
 
@@ -65,3 +69,24 @@ def confirm_start_trip(request: ConfirmStartTripRequest):
 @router.post("/reject-trip")
 def reject_trip(request: RejectTripRequest):
     return service.reject_trip(request)
+
+@router.get("/exception-types")
+def get_exception_types():
+    return service.get_exception_types()    
+
+@router.get("/exception-severity")
+def get_exception_severity():
+    return service.get_exception_severity()
+
+@router.post("/report-exception")
+def report_exception(request: ReportExceptionRequest):
+    return service.report_exception(request)
+
+
+@router.post("/scan-delivery-qr")
+def scan_delivery_qr(request: ScanDeliveryQrRequest):
+    return service.scan_delivery_qr(request)
+
+@router.post("/upload-delivery-photo")
+def upload_delivery_photo(request: UploadDeliveryPhotoRequest):
+    return service.upload_delivery_photo(request)

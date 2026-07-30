@@ -63,3 +63,33 @@ class RejectTripRequest(BaseModel):
     driverId: str
     reason: str
     remarks: Optional[str] = None
+
+
+
+from pydantic import BaseModel
+from typing import Optional
+
+
+class ReportExceptionRequest(BaseModel):
+    tripId: str
+    driverId: str
+    exceptionType: str
+    severity: str
+    stopSequence: Optional[int] = 0
+    remarks: str
+    photo: Optional[str] = None
+    
+class ScanDeliveryQrRequest(BaseModel):
+    tripId: str
+    driverId: str
+    deliveryToken: str
+    latitude: float
+    longitude: float  
+    
+
+class UploadDeliveryPhotoRequest(BaseModel):
+    manifestId: str
+    photo: str
+    latitude: float
+    longitude: float
+    notes: str | None = None

@@ -1,6 +1,14 @@
 import logging
 
 import requests
+import random
+import string
+import random
+
+from app.api.v1.trip.services.email_service import EmailService
+import random
+
+from app.api.v1.trip.services.email_service import EmailService
 
 from app.db.session import get_connection
 
@@ -21,7 +29,8 @@ class TripRepository:
             with conn.cursor() as cursor:
 
                 # Trip Header
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         t.name AS trip_id,
                         t.trip_date,
@@ -59,7 +68,9 @@ class TripRepository:
 
                     ORDER BY t.creation DESC
                     LIMIT 1
-                """, (driver_id,))
+                """,
+                    (driver_id,),
+                )
 
                 trip = cursor.fetchone()
 
@@ -67,7 +78,8 @@ class TripRepository:
                     return None
 
                 # Stops
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         sequence,
                         stop_type,
@@ -91,12 +103,15 @@ class TripRepository:
                     WHERE parent = %s
 
                     ORDER BY sequence
-                """, (trip["trip_id"],))
+                """,
+                    (trip["trip_id"],),
+                )
 
                 stops = cursor.fetchall()
 
                 # Manifests
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name AS manifest_id,
                         status,
@@ -110,7 +125,9 @@ class TripRepository:
                     WHERE trip = %s
 
                     ORDER BY creation
-                """, (trip["trip_id"],))
+                """,
+                    (trip["trip_id"],),
+                )
 
                 manifests = cursor.fetchall()
 
@@ -138,7 +155,8 @@ class TripRepository:
         try:
             with conn.cursor() as cursor:
 
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name,
                         creation,
@@ -151,7 +169,9 @@ class TripRepository:
                     WHERE for_user = %s
                       AND document_type = 'CH Logistics Trip'
                     ORDER BY creation DESC
-                """, (email,))
+                """,
+                    (email,),
+                )
 
                 return cursor.fetchall()
 
@@ -173,11 +193,14 @@ class TripRepository:
         try:
             with conn.cursor() as cursor:
 
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabNotification Log`
                     SET `read` = 1
                     WHERE name = %s
-                """, (notification_name,))
+                """,
+                    (notification_name,),
+                )
 
                 conn.commit()
 
@@ -198,6 +221,7 @@ class TripRepository:
 
         finally:
             conn.close()
+
     @staticmethod
     def scan_pickup_qr(trip_id, driver_id, pickup_token, latitude, longitude):
 
@@ -209,7 +233,8 @@ class TripRepository:
                 # -----------------------------------------
                 # Validate Trip
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name,
                         status
@@ -217,32 +242,37 @@ class TripRepository:
                     WHERE
                         name=%s
                         AND driver=%s
-                """, (trip_id, driver_id))
+                """,
+                    (trip_id, driver_id),
+                )
 
                 trip = cursor.fetchone()
 
                 if not trip:
                     return {
                         "success": False,
-                        "message": "Trip not found or not assigned to this driver."
+                        "message": "Trip not found or not assigned to this driver.",
                     }
 
                 if trip["status"] != "Assigned":
                     return {
                         "success": False,
-                        "message": f"Trip status '{trip['status']}' is not allowed for Pickup QR scan."
+                        "message": f"Trip status '{trip['status']}' is not allowed for Pickup QR scan.",
                     }
 
                 # -----------------------------------------
                 # Get Driver User
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name,
                         user
                     FROM `tabDriver`
                     WHERE name=%s
-                """, (driver_id,))
+                """,
+                    (driver_id,),
+                )
 
                 driver = cursor.fetchone()
 
@@ -250,7 +280,7 @@ class TripRepository:
                     return {
                         "success": False,
                         "message": "Driver not found.",
-                        "receivedDriverId": driver_id
+                        "receivedDriverId": driver_id,
                     }
 
                 scanned_by = driver.get("user")
@@ -259,13 +289,14 @@ class TripRepository:
                     return {
                         "success": False,
                         "message": "User is not mapped to this Driver.",
-                        "driver": driver
+                        "driver": driver,
                     }
 
                 # -----------------------------------------
                 # Validate Pickup Stop
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name,
                         pickup_token,
@@ -276,29 +307,26 @@ class TripRepository:
                         AND stop_type='Pickup'
                         AND pickup_token=%s
                     LIMIT 1
-                """, (
-                    trip_id,
-                    pickup_token
-                ))
+                """,
+                    (trip_id, pickup_token),
+                )
 
                 stop = cursor.fetchone()
 
                 if not stop:
-                    return {
-                        "success": False,
-                        "message": "Invalid Pickup QR."
-                    }
+                    return {"success": False, "message": "Invalid Pickup QR."}
 
                 if stop["pickup_scanned_at"]:
                     return {
                         "success": False,
-                        "message": "Pickup QR has already been scanned."
+                        "message": "Pickup QR has already been scanned.",
                     }
 
                 # -----------------------------------------
                 # Update Pickup Scan
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabCH Logistics Trip Stop`
                     SET
                         pickup_scanned_at = NOW(),
@@ -309,12 +337,9 @@ class TripRepository:
                         modified = NOW()
                     WHERE
                         name=%s
-                """, (
-                    scanned_by,
-                    latitude,
-                    longitude,
-                    stop["name"]
-                ))
+                """,
+                    (scanned_by, latitude, longitude, stop["name"]),
+                )
 
                 conn.commit()
 
@@ -324,20 +349,16 @@ class TripRepository:
                     "tripId": trip_id,
                     "driverId": driver_id,
                     "pickupStopId": stop["name"],
-                    "pickupVerified": True
+                    "pickupVerified": True,
                 }
 
         except Exception as e:
             conn.rollback()
 
-            return {
-                "success": False,
-                "message": str(e)
-            }
+            return {"success": False, "message": str(e)}
 
         finally:
             conn.close()
-
 
     # ---------------------------------------------------------------------
     # READ: Accept Trip Details (validate + pickup stop + manifests)
@@ -353,7 +374,8 @@ class TripRepository:
                 # -----------------------------------------
                 # Validate Trip
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name AS trip_id,
                         status,
@@ -364,7 +386,9 @@ class TripRepository:
                         route
                     FROM `tabCH Logistics Trip`
                     WHERE name = %s
-                """, (trip_id,))
+                """,
+                    (trip_id,),
+                )
 
                 trip = cursor.fetchone()
 
@@ -383,7 +407,8 @@ class TripRepository:
                 # -----------------------------------------
                 # Pickup Stop
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name AS stop_id,
                         warehouse,
@@ -396,14 +421,17 @@ class TripRepository:
                         parent = %s
                         AND stop_type = 'Pickup'
                     LIMIT 1
-                """, (trip_id,))
+                """,
+                    (trip_id,),
+                )
 
                 pickup_stop = cursor.fetchone()
 
                 # -----------------------------------------
                 # Manifests
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name AS manifest_id,
                         status AS manifest_status,
@@ -413,7 +441,9 @@ class TripRepository:
                     FROM `tabCH Transfer Manifest`
                     WHERE trip = %s
                     ORDER BY creation
-                """, (trip_id,))
+                """,
+                    (trip_id,),
+                )
 
                 manifests = cursor.fetchall()
 
@@ -425,9 +455,7 @@ class TripRepository:
                 }
 
         except Exception as e:
-            logger.exception(
-                "get_accept_trip_details failed (trip=%s)", trip_id
-            )
+            logger.exception("get_accept_trip_details failed (trip=%s)", trip_id)
             return {
                 "success": False,
                 "message": str(e),
@@ -435,7 +463,6 @@ class TripRepository:
 
         finally:
             conn.close()
-
 
     # ---------------------------------------------------------------------
     # WRITE: Upload Pickup Photo
@@ -455,13 +482,16 @@ class TripRepository:
             with conn.cursor() as cursor:
 
                 # Validate Manifest
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name,
                         status
                     FROM `tabCH Transfer Manifest`
                     WHERE name = %s
-                """, (manifest_id,))
+                """,
+                    (manifest_id,),
+                )
 
                 manifest = cursor.fetchone()
 
@@ -472,7 +502,8 @@ class TripRepository:
                     }
 
                 # Update Pickup Photo
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabCH Transfer Manifest`
                     SET
                         pickup_photo = %s,
@@ -482,13 +513,15 @@ class TripRepository:
                         pickup_notes = %s
                     WHERE
                         name = %s
-                """, (
-                    photo,
-                    latitude,
-                    longitude,
-                    notes,
-                    manifest_id,
-                ))
+                """,
+                    (
+                        photo,
+                        latitude,
+                        longitude,
+                        notes,
+                        manifest_id,
+                    ),
+                )
 
                 conn.commit()
 
@@ -499,9 +532,7 @@ class TripRepository:
 
         except Exception as e:
             conn.rollback()
-            logger.exception(
-                "upload_pickup_photo failed (manifest=%s)", manifest_id
-            )
+            logger.exception("upload_pickup_photo failed (manifest=%s)", manifest_id)
             return {
                 "success": False,
                 "message": str(e),
@@ -535,7 +566,8 @@ class TripRepository:
                 # ----------------------------------
                 # Validate Trip
                 # ----------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name,
                         status
@@ -543,7 +575,9 @@ class TripRepository:
                     WHERE
                         name = %s
                         AND driver = %s
-                """, (trip_id, driver_id))
+                """,
+                    (trip_id, driver_id),
+                )
 
                 trip = cursor.fetchone()
 
@@ -562,7 +596,8 @@ class TripRepository:
                 # ----------------------------------
                 # Validate Manifest
                 # ----------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name,
                         status,
@@ -571,7 +606,9 @@ class TripRepository:
                     WHERE
                         name = %s
                         AND trip = %s
-                """, (manifest_id, trip_id))
+                """,
+                    (manifest_id, trip_id),
+                )
 
                 manifest = cursor.fetchone()
 
@@ -590,7 +627,8 @@ class TripRepository:
                 # ----------------------------------
                 # Validate Delivery QR
                 # ----------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name
                     FROM `tabCH Logistics Trip Stop`
@@ -598,7 +636,9 @@ class TripRepository:
                         parent = %s
                         AND stop_type = 'Drop'
                         AND delivery_token = %s
-                """, (trip_id, delivery_token))
+                """,
+                    (trip_id, delivery_token),
+                )
 
                 stop = cursor.fetchone()
 
@@ -638,7 +678,8 @@ class TripRepository:
                 # ----------------------------------
                 # Update Drop Stop
                 # ----------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabCH Logistics Trip Stop`
                     SET
                         status = 'Completed',
@@ -649,17 +690,20 @@ class TripRepository:
                         delivery_scanned_by = %s
                     WHERE
                         name = %s
-                """, (
-                    latitude,
-                    longitude,
-                    driver_id,
-                    stop["name"],
-                ))
+                """,
+                    (
+                        latitude,
+                        longitude,
+                        driver_id,
+                        stop["name"],
+                    ),
+                )
 
                 # ----------------------------------
                 # Update Manifest
                 # ----------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabCH Transfer Manifest`
                     SET
                         status = 'Delivered',
@@ -674,52 +718,63 @@ class TripRepository:
                         notes = %s
                     WHERE
                         name = %s
-                """, (
-                    delivery_photo,
-                    latitude,
-                    longitude,
-                    receiver_name,
-                    receiver_name,
-                    notes,
-                    manifest_id,
-                ))
+                """,
+                    (
+                        delivery_photo,
+                        latitude,
+                        longitude,
+                        receiver_name,
+                        receiver_name,
+                        notes,
+                        manifest_id,
+                    ),
+                )
 
                 # ----------------------------------
                 # Update Manifest Items
                 # ----------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabCH Transfer Manifest Item`
                     SET
                         transfer_status = 'Delivered'
                     WHERE
                         parent = %s
-                """, (manifest_id,))
+                """,
+                    (manifest_id,),
+                )
 
                 # ----------------------------------
                 # Check Pending Manifests
                 # ----------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT COUNT(*) AS pending
                     FROM `tabCH Transfer Manifest`
                     WHERE
                         trip = %s
                         AND status != 'Delivered'
-                """, (trip_id,))
+                """,
+                    (trip_id,),
+                )
 
                 pending = cursor.fetchone()
 
                 trip_status = "Started"
 
-                if pending["pending"] == 0:
+                if pending["pending"] == 0:  # type: ignore
 
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         UPDATE `tabCH Logistics Trip`
                         SET
                             status = 'Completed',
                             actual_end = NOW()
                         WHERE
                             name = %s
-                    """, (trip_id,))
+                    """,
+                        (trip_id,),
+                    )
 
                     trip_status = "Completed"
 
@@ -750,51 +805,133 @@ class TripRepository:
     # ---------------------------------------------------------------------
     # EXTERNAL: Request Delivery OTP (ERPNext HTTP endpoint, no DB)
     # ---------------------------------------------------------------------
+
     @staticmethod
     def request_delivery_otp(manifest_id):
+        conn = get_connection()
 
         try:
+            with conn.cursor() as cursor:
 
-            ERP_URL = "https://delivery.gogizmo.co"
+            # -------------------------------------------------
+            # Load Manifest
+            # -------------------------------------------------
+                cursor.execute("""
+                SELECT
+                    name,
+                    company,
+                    destination_store,
+                    destination_warehouse,
+                    driver_name,
+                    status
+                FROM `tabCH Transfer Manifest`
+                WHERE name = %s
+                """, (manifest_id,))
 
-            response = requests.post(
-                f"{ERP_URL}/api/method/ch_logistics.api.transfer_manifest_api.request_delivery_otp",
-                data={
-                    "manifest": manifest_id,
-                },
-                timeout=30,
+                manifest = cursor.fetchone()
 
-                # If authentication is required, add the appropriate headers or cookies.
-                # Example:
-                # headers={"Authorization": "token api_key:api_secret"}
-            )
-
-            if response.status_code != 200:
-                return {
+                if manifest is None:
+                    return {
                     "success": False,
-                    "message": "Unable to contact ERPNext.",
+                    "message": "Manifest not found."
                 }
 
-            result = response.json().get("message")
+                if manifest["status"] != "In Transit":
+                    return {
+                    "success": False,
+                    "message": "Delivery OTP can only be generated for In Transit manifests."
+                }
+
+            # -------------------------------------------------
+            # Generate OTP
+            # -------------------------------------------------
+                otp = str(random.randint(100000, 999999))
+
+            # -------------------------------------------------
+            # Save OTP
+            # -------------------------------------------------
+                cursor.execute("""
+                UPDATE `tabCH Transfer Manifest`
+                SET
+                    delivery_otp = %s,
+                    modified = NOW()
+                WHERE name = %s
+                  """, (
+                    otp,
+                manifest_id
+                ))
+
+            # -------------------------------------------------
+            # Item Summary
+            # -------------------------------------------------
+                cursor.execute("""
+                SELECT
+                    COALESCE(SUM(item_count),0) AS item_lines,
+                    COALESCE(SUM(total_qty),0) AS total_qty
+                FROM `tabCH Transfer Manifest Item`
+                WHERE parent = %s
+            """, (manifest_id,))
+
+                items = cursor.fetchone()
+                if items:
+                    item_lines = items.get("item_lines", 0)
+                    total_qty = items.get("total_qty", 0)
+                else:
+                    item_lines = 0
+                    total_qty = 0
+
+            # -------------------------------------------------
+            # Destination Warehouse Email
+            # -------------------------------------------------
+                warehouse_email = None
+
+                if manifest["destination_warehouse"]:
+                    cursor.execute("""
+                    SELECT email_id
+                    FROM `tabWarehouse`
+                    WHERE name = %s
+                """, (manifest["destination_warehouse"],))
+
+                warehouse = cursor.fetchone()
+                if warehouse:
+                    warehouse_email = warehouse.get("email_id")
+
+
+                conn.commit()
+
+        # -------------------------------------------------
+        # Send Email
+        # -------------------------------------------------
+            if warehouse_email:
+
+               EmailService.send_delivery_otp(
+                recipient=warehouse_email,
+                manifest=manifest["name"],
+                driver=manifest["driver_name"] or "",
+                item_lines=int(item_lines),
+                total_qty=float(total_qty),
+                otp=otp
+               )
 
             return {
-                "success": True,
-                "message": result.get("message"),
-                "maskedEmails": result.get("masked_emails", []),
-                "maskedMobiles": result.get("masked_mobiles", []),
-                "emailCount": result.get("email_count", 0),
-                "smsCount": result.get("sms_count", 0),
+            "success": True,
+            "message": "Delivery OTP generated successfully.",
+            "manifest": manifest["name"],
+            "otp": otp,
+            "email": warehouse_email
             }
 
         except Exception as e:
-            logger.exception(
-                "request_delivery_otp failed (manifest=%s)", manifest_id
-            )
-            return {
-                "success": False,
-                "message": str(e),
-            }
+              conn.rollback()
 
+              return {
+                "success": False,
+                "message": str(e)
+            }
+        finally:
+                 conn.close()
+           
+           
     # ---------------------------------------------------------------------
     # WRITE: Accept Trip
     # ---------------------------------------------------------------------
@@ -809,7 +946,8 @@ class TripRepository:
                 # -----------------------------------------
                 # Validate Trip
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name,
                         status,
@@ -823,7 +961,9 @@ class TripRepository:
                     WHERE
                         name = %s
                         AND driver = %s
-                """, (trip_id, driver_id))
+                """,
+                    (trip_id, driver_id),
+                )
 
                 trip = cursor.fetchone()
 
@@ -869,14 +1009,17 @@ class TripRepository:
                 # -----------------------------------------
                 # Accept Trip
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabCH Logistics Trip`
                     SET
                         status = 'Accepted',
                         modified = NOW()
                     WHERE
                         name = %s
-                """, (trip_id,))
+                """,
+                    (trip_id,),
+                )
 
                 conn.commit()
 
@@ -925,7 +1068,8 @@ class TripRepository:
                 # -----------------------------------------
                 # Validate Trip
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name,
                         status
@@ -933,7 +1077,9 @@ class TripRepository:
                     WHERE
                         name = %s
                         AND driver = %s
-                """, (trip_id, driver_id))
+                """,
+                    (trip_id, driver_id),
+                )
 
                 trip = cursor.fetchone()
 
@@ -970,7 +1116,8 @@ class TripRepository:
                 # -----------------------------------------
                 # Validate Pickup Stop
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name,
                         pickup_scanned_at
@@ -979,7 +1126,9 @@ class TripRepository:
                         parent = %s
                         AND stop_type = 'Pickup'
                     LIMIT 1
-                """, (trip_id,))
+                """,
+                    (trip_id,),
+                )
 
                 stop = cursor.fetchone()
 
@@ -998,7 +1147,8 @@ class TripRepository:
                 # -----------------------------------------
                 # Validate Pickup Photo
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT COUNT(*) AS cnt
                     FROM `tabCH Transfer Manifest`
                     WHERE
@@ -1007,11 +1157,13 @@ class TripRepository:
                             pickup_photo IS NULL
                             OR pickup_photo = ''
                         )
-                """, (trip_id,))
+                """,
+                    (trip_id,),
+                )
 
                 photo = cursor.fetchone()
 
-                if photo["cnt"] > 0:
+                if photo["cnt"] > 0:  # type: ignore
                     return {
                         "success": False,
                         "message": "Please upload the pickup photo before starting the trip.",
@@ -1020,7 +1172,8 @@ class TripRepository:
                 # -----------------------------------------
                 # Complete Pickup Stop
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabCH Logistics Trip Stop`
                     SET
                         status = 'Completed',
@@ -1030,16 +1183,19 @@ class TripRepository:
                         modified = NOW()
                     WHERE
                         name = %s
-                """, (
-                    latitude,
-                    longitude,
-                    stop["name"],
-                ))
+                """,
+                    (
+                        latitude,
+                        longitude,
+                        stop["name"],
+                    ),
+                )
 
                 # -----------------------------------------
                 # Start Trip
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabCH Logistics Trip`
                     SET
                         status = 'Started',
@@ -1047,24 +1203,30 @@ class TripRepository:
                         modified = NOW()
                     WHERE
                         name = %s
-                """, (trip_id,))
+                """,
+                    (trip_id,),
+                )
 
                 # -----------------------------------------
                 # Update Manifest
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabCH Transfer Manifest`
                     SET
                         status = 'In Transit',
                         modified = NOW()
                     WHERE
                         trip = %s
-                """, (trip_id,))
+                """,
+                    (trip_id,),
+                )
 
                 # -----------------------------------------
                 # Update Manifest Items
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabCH Transfer Manifest Item`
                     SET
                         transfer_status = 'Picked Up',
@@ -1075,7 +1237,9 @@ class TripRepository:
                             FROM `tabCH Transfer Manifest`
                             WHERE trip = %s
                         )
-                """, (trip_id,))
+                """,
+                    (trip_id,),
+                )
 
                 conn.commit()
 
@@ -1122,7 +1286,8 @@ class TripRepository:
                 # -----------------------------------------
                 # Validate Trip
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         name,
                         status,
@@ -1131,7 +1296,9 @@ class TripRepository:
                     WHERE
                         name = %s
                         AND driver = %s
-                """, (trip_id, driver_id))
+                """,
+                    (trip_id, driver_id),
+                )
 
                 trip = cursor.fetchone()
 
@@ -1177,7 +1344,8 @@ class TripRepository:
                 # -----------------------------------------
                 # Reject Trip
                 # -----------------------------------------
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE `tabCH Logistics Trip`
                     SET
                         status = 'Rejected',
@@ -1188,12 +1356,14 @@ class TripRepository:
                         modified = NOW()
                     WHERE
                         name = %s
-                """, (
-                    reason,
-                    driver_id,
-                    remarks,
-                    trip_id,
-                ))
+                """,
+                    (
+                        reason,
+                        driver_id,
+                        remarks,
+                        trip_id,
+                    ),
+                )
 
                 conn.commit()
 
@@ -1214,5 +1384,396 @@ class TripRepository:
                 "message": str(e),
             }
 
+        finally:
+            conn.close()
+
+    # ---------------------------------------------------------------------
+    # READ: Exception Types
+    # ---------------------------------------------------------------------
+    @staticmethod
+    def get_exception_types():
+        return {
+            "success": True,
+            "exceptionTypes": [
+                "Customer Not Available",
+                "Customer Refused Delivery",
+                "Address Issue",
+                "Wrong Address",
+                "Store Closed",
+                "Warehouse Closed",
+                "Vehicle Breakdown",
+                "Accident",
+                "Traffic Delay",
+                "Route Blocked",
+                "Fuel Issue",
+                "Driver Health Issue",
+                "Item Damaged",
+                "Item Missing",
+                "Wrong Item Delivered",
+                "Short Quantity",
+                "Excess Quantity",
+                "Package Tampered",
+                "Barcode/QR Scan Failed",
+                "OTP Verification Failed",
+                "Payment Issue",
+                "Document Missing",
+                "E-Way Bill Issue",
+                "Network Issue",
+                "Application Error",
+                "Pickup Delay",
+                "Delivery Delay",
+                "Return to Origin",
+                "Other",
+            ],
+        }
+
+    @staticmethod
+    def get_exception_severity():
+        return {"success": True, "severity": ["Low", "Medium", "High", "Critical"]}
+
+    @staticmethod
+    def report_exception(
+        trip_id,
+        driver_id,
+        exception_type,
+        severity,
+        stop_sequence,
+        remarks,
+        photo,
+    ):
+
+        conn = get_connection()
+
+        try:
+            with conn.cursor() as cursor:
+
+                # -----------------------------------------
+                # Validate Trip
+                # -----------------------------------------
+                cursor.execute(
+                    """
+                SELECT
+                    name,
+                    status
+                FROM `tabCH Logistics Trip`
+                WHERE
+                    name = %s
+                    AND driver = %s
+            """,
+                    (trip_id, driver_id),
+                )
+
+                trip = cursor.fetchone()
+
+                if not trip:
+                    return {
+                        "success": False,
+                        "message": "Trip not found or not assigned to this driver.",
+                    }
+
+                # Generate Frappe-style row name
+                row_name = "".join(
+                    random.choices(string.ascii_lowercase + string.digits, k=10)
+                )
+
+                # -----------------------------------------
+                # Insert Exception
+                # -----------------------------------------
+                cursor.execute(
+                    """
+                    INSERT INTO `tabCH Logistics Exception`
+                (
+                    name,
+                    creation,
+                    modified,
+                    modified_by,
+                    owner,
+                    docstatus,
+                    idx,
+                    occurred_at,
+                    exception_type,
+                    severity,
+                    stop_sequence,
+                    remarks,
+                    photo,
+                    resolution_status,
+                    parent,
+                    parentfield,
+                    parenttype
+                )
+                VALUES
+                (
+                    %s,
+                    NOW(),
+                    NOW(),
+                    %s,
+                    %s,
+                    0,
+                    1,
+                    NOW(),
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    'Open',
+                    %s,
+                    'exceptions',
+                    'CH Logistics Trip'
+                )
+            """,
+                    (
+                        row_name,
+                        driver_id,
+                        driver_id,
+                        exception_type,
+                        severity,
+                        stop_sequence or 0,
+                        remarks,
+                        photo,
+                        trip_id,
+                    ),
+                )
+
+            conn.commit()
+
+            return {
+                "success": True,
+                "message": "Exception reported successfully.",
+                "exceptionId": row_name,
+            }
+
+        except Exception as e:
+
+            conn.rollback()
+
+            logger.exception("report_exception failed (trip=%s)", trip_id)
+
+            return {"success": False, "message": str(e)}
+
+        finally:
+            conn.close()
+    # ---------------------------------------------------------------------
+# WRITE: Scan Delivery QR
+# ---------------------------------------------------------------------
+    @staticmethod
+    def scan_delivery_qr(
+    trip_id,
+    driver_id,
+    delivery_token,
+    latitude,
+    longitude,
+    ):
+
+        conn = get_connection()
+
+        try:
+            with conn.cursor() as cursor:
+
+            # -----------------------------------------
+            # Validate Trip
+            # -----------------------------------------
+                cursor.execute("""
+                SELECT
+                    name,
+                    status
+                FROM `tabCH Logistics Trip`
+                WHERE
+                    name = %s
+                    AND driver = %s
+            """, (trip_id, driver_id))
+
+            trip = cursor.fetchone()
+
+            if not trip:
+                return {
+                    "success": False,
+                    "message": "Trip not found or not assigned to this driver."
+                }
+
+            if trip["status"] != "Started":
+                return {
+                    "success": False,
+                    "message": "Trip must be in Started status."
+                }
+
+            # -----------------------------------------
+            # Get Driver User
+            # -----------------------------------------
+            cursor.execute("""
+                SELECT user
+                FROM `tabDriver`
+                WHERE name = %s
+            """, (driver_id,))
+
+            driver = cursor.fetchone()
+
+            if not driver or not driver["user"]:
+                return {
+                    "success": False,
+                    "message": "Driver user mapping not found."
+                }
+
+            scanned_by = driver["user"]
+
+            # -----------------------------------------
+            # Validate Delivery Stop
+            # -----------------------------------------
+            cursor.execute("""
+                SELECT
+                    name,
+                    delivery_token,
+                    delivery_scanned_at
+                FROM `tabCH Logistics Trip Stop`
+                WHERE
+                    parent = %s
+                    AND stop_type = 'Drop'
+                    AND delivery_token = %s
+                LIMIT 1
+            """, (trip_id, delivery_token))
+
+            stop = cursor.fetchone()
+
+            if not stop:
+                return {
+                    "success": False,
+                    "message": "Invalid Delivery QR."
+                }
+
+            if stop["delivery_scanned_at"]:
+                return {
+                    "success": False,
+                    "message": "Delivery QR already scanned."
+                }
+
+            # -----------------------------------------
+            # Update Delivery Scan
+            # -----------------------------------------
+            cursor.execute("""
+                UPDATE `tabCH Logistics Trip Stop`
+                SET
+                    delivery_scanned_at = NOW(),
+                    delivery_scanned_by = %s,
+                    gps_lat = %s,
+                    gps_lng = %s,
+                    modified = NOW()
+                WHERE
+                    name = %s
+            """, (
+                scanned_by,
+                latitude,
+                longitude,
+                stop["name"]
+            ))
+
+            conn.commit()
+
+            return {
+                "success": True,
+                "message": "Delivery QR scanned successfully.",
+                "tripId": trip_id,
+                "driverId": driver_id,
+                "deliveryStopId": stop["name"],
+                "deliveryVerified": True
+            }
+
+        except Exception as e:
+
+            conn.rollback()
+
+            logger.exception(
+                "scan_delivery_qr failed (trip=%s)",
+                trip_id
+            )
+
+            return {
+                "success": False,
+                "message": str(e)
+            }
+        finally:
+            conn.close()
+            
+            
+# ---------------------------------------------------------------------
+# WRITE: Upload Delivery Photo
+# ---------------------------------------------------------------------
+    @staticmethod
+    def upload_delivery_photo(
+    manifest_id,
+    photo,
+    latitude,
+    longitude,
+    notes,
+    ):
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cursor:
+
+            # Validate Manifest
+                cursor.execute(
+                """
+                SELECT
+                    name,
+                    status
+                FROM `tabCH Transfer Manifest`
+                WHERE name = %s
+                """,
+                (manifest_id,),
+            )
+
+            manifest = cursor.fetchone()
+
+            if not manifest:
+                return {
+                    "success": False,
+                    "message": "Manifest not found.",
+                }
+
+            if manifest["status"] != "In Transit":
+                return {
+                    "success": False,
+                    "message": "Only In Transit manifests can upload a delivery photo.",
+                }
+
+            # Update Delivery Photo
+            cursor.execute(
+                """
+                UPDATE `tabCH Transfer Manifest`
+                SET
+                    delivery_photo = %s,
+                    delivery_datetime = NOW(),
+                    delivery_lat = %s,
+                    delivery_lng = %s,
+                    notes = %s
+                WHERE
+                    name = %s
+                """,
+                (
+                    photo,
+                    latitude,
+                    longitude,
+                    notes,
+                    manifest_id,
+                ),
+            )
+
+            conn.commit()
+
+            return {
+                "success": True,
+                "message": "Delivery photo uploaded successfully.",
+            }
+
+        except Exception as e:
+            conn.rollback()
+            logger.exception(
+                "upload_delivery_photo failed (manifest=%s)",
+                manifest_id,
+            )
+            return {
+                "success": False,
+                "message": str(e),
+            }
         finally:
             conn.close()
