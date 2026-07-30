@@ -198,6 +198,146 @@ class TripRepository:
 
         finally:
             conn.close()
+    @staticmethod
+    def scan_pickup_qr(trip_id, driver_id, pickup_token, latitude, longitude):
+
+        conn = get_connection()
+
+        try:
+            with conn.cursor() as cursor:
+
+                # -----------------------------------------
+                # Validate Trip
+                # -----------------------------------------
+                cursor.execute("""
+                    SELECT
+                        name,
+                        status
+                    FROM `tabCH Logistics Trip`
+                    WHERE
+                        name=%s
+                        AND driver=%s
+                """, (trip_id, driver_id))
+
+                trip = cursor.fetchone()
+
+                if not trip:
+                    return {
+                        "success": False,
+                        "message": "Trip not found or not assigned to this driver."
+                    }
+
+                if trip["status"] != "Assigned":
+                    return {
+                        "success": False,
+                        "message": f"Trip status '{trip['status']}' is not allowed for Pickup QR scan."
+                    }
+
+                # -----------------------------------------
+                # Get Driver User
+                # -----------------------------------------
+                cursor.execute("""
+                    SELECT
+                        name,
+                        user
+                    FROM `tabDriver`
+                    WHERE name=%s
+                """, (driver_id,))
+
+                driver = cursor.fetchone()
+
+                if driver is None:
+                    return {
+                        "success": False,
+                        "message": "Driver not found.",
+                        "receivedDriverId": driver_id
+                    }
+
+                scanned_by = driver.get("user")
+
+                if not scanned_by:
+                    return {
+                        "success": False,
+                        "message": "User is not mapped to this Driver.",
+                        "driver": driver
+                    }
+
+                # -----------------------------------------
+                # Validate Pickup Stop
+                # -----------------------------------------
+                cursor.execute("""
+                    SELECT
+                        name,
+                        pickup_token,
+                        pickup_scanned_at
+                    FROM `tabCH Logistics Trip Stop`
+                    WHERE
+                        parent=%s
+                        AND stop_type='Pickup'
+                        AND pickup_token=%s
+                    LIMIT 1
+                """, (
+                    trip_id,
+                    pickup_token
+                ))
+
+                stop = cursor.fetchone()
+
+                if not stop:
+                    return {
+                        "success": False,
+                        "message": "Invalid Pickup QR."
+                    }
+
+                if stop["pickup_scanned_at"]:
+                    return {
+                        "success": False,
+                        "message": "Pickup QR has already been scanned."
+                    }
+
+                # -----------------------------------------
+                # Update Pickup Scan
+                # -----------------------------------------
+                cursor.execute("""
+                    UPDATE `tabCH Logistics Trip Stop`
+                    SET
+                        pickup_scanned_at = NOW(),
+                        pickup_scanned_by = %s,
+                        gps_lat = %s,
+                        gps_lng = %s,
+                        ata = NOW(),
+                        modified = NOW()
+                    WHERE
+                        name=%s
+                """, (
+                    scanned_by,
+                    latitude,
+                    longitude,
+                    stop["name"]
+                ))
+
+                conn.commit()
+
+                return {
+                    "success": True,
+                    "message": "Pickup QR scanned successfully.",
+                    "tripId": trip_id,
+                    "driverId": driver_id,
+                    "pickupStopId": stop["name"],
+                    "pickupVerified": True
+                }
+
+        except Exception as e:
+            conn.rollback()
+
+            return {
+                "success": False,
+                "message": str(e)
+            }
+
+        finally:
+            conn.close()
+
 
     # ---------------------------------------------------------------------
     # READ: Accept Trip Details (validate + pickup stop + manifests)
@@ -296,141 +436,6 @@ class TripRepository:
         finally:
             conn.close()
 
-    # ---------------------------------------------------------------------
-    # WRITE: Scan Pickup QR
-    # ---------------------------------------------------------------------
-    @staticmethod
-    def scan_pickup_qr(
-        trip_id,
-        driver_id,
-        pickup_token,
-        latitude,
-        longitude,
-    ):
-
-        conn = get_connection()
-
-        try:
-            with conn.cursor() as cursor:
-
-                # -----------------------------------------
-                # Validate Trip
-                # -----------------------------------------
-                cursor.execute("""
-                    SELECT
-                        name,
-                        status,
-                        driver
-                    FROM `tabCH Logistics Trip`
-                    WHERE
-                        name = %s
-                        AND driver = %s
-                """, (trip_id, driver_id))
-
-                trip = cursor.fetchone()
-
-                if not trip:
-                    return {
-                        "success": False,
-                        "message": "Trip not found or not assigned to this driver.",
-                    }
-
-                if trip["status"] not in ("Assigned", "Accepted"):
-                    return {
-                        "success": False,
-                        "message": f"Pickup QR cannot be scanned because trip status is '{trip['status']}'.",
-                    }
-
-                # -----------------------------------------
-                # Validate Pickup Stop
-                # -----------------------------------------
-                cursor.execute("""
-                    SELECT
-                        name,
-                        pickup_token,
-                        pickup_scanned_at,
-                        status
-                    FROM `tabCH Logistics Trip Stop`
-                    WHERE
-                        parent = %s
-                        AND stop_type = 'Pickup'
-                    LIMIT 1
-                """, (trip_id,))
-
-                stop = cursor.fetchone()
-
-                if not stop:
-                    return {
-                        "success": False,
-                        "message": "Pickup stop not found.",
-                    }
-
-                if stop["pickup_token"] != pickup_token:
-                    return {
-                        "success": False,
-                        "message": "Invalid Pickup QR.",
-                    }
-
-                if stop["pickup_scanned_at"]:
-                    return {
-                        "success": False,
-                        "message": "Pickup QR has already been scanned.",
-                    }
-
-                # -----------------------------------------
-                # pickup_scanned_by is Link -> Driver.
-                # Frappe is NOT installed in this FastAPI project,
-                # so frappe.session.user is unavailable. Use the
-                # driver id directly (it exists in tabDriver, e.g.
-                # HR-DRI-2026-00004).
-                # -----------------------------------------
-                scanned_by = driver_id
-
-                # -----------------------------------------
-                # Update Pickup Stop
-                # -----------------------------------------
-                cursor.execute("""
-                    UPDATE `tabCH Logistics Trip Stop`
-                    SET
-                        pickup_scanned_at = NOW(),
-                        pickup_scanned_by = %s,
-                        gps_lat = %s,
-                        gps_lng = %s,
-                        ata = NOW(),
-                        status = 'Completed',
-                        modified = NOW()
-                    WHERE
-                        name = %s
-                """, (
-                    scanned_by,
-                    latitude,
-                    longitude,
-                    stop["name"],
-                ))
-
-                conn.commit()
-
-                return {
-                    "success": True,
-                    "message": "Pickup QR scanned successfully.",
-                    "tripId": trip_id,
-                    "driverId": driver_id,
-                    "pickupStopId": stop["name"],
-                    "pickupVerified": True,
-                }
-
-        except Exception as e:
-            conn.rollback()
-            logger.exception(
-                "scan_pickup_qr failed (trip=%s, driver=%s)", trip_id, driver_id
-            )
-            return {
-                "success": False,
-                "message": str(e),
-            }
-
-        finally:
-            conn.close()
 
     # ---------------------------------------------------------------------
     # WRITE: Upload Pickup Photo
