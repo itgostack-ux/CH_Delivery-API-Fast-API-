@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_DAYS: int = 7
 
+    # ERPNext/Frappe REST API (used to upload photos so they appear in ERPNext)
+    FRAPPE_URL: str = "http://204.12.251.252"
+    FRAPPE_API_KEY: str | None = None
+    FRAPPE_API_SECRET: str | None = None
+
     # SMTP (optional: only needed by endpoints that send mail)
     SMTP_SERVER: str | None = None
     SMTP_PORT: int = 587

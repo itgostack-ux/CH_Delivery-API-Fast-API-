@@ -98,6 +98,35 @@ class AuthRepository:
         finally:
             conn.close()
 
+    @staticmethod
+    def deactivate_devices(user_name):
+        """Stop push notifications for the user's registered app devices."""
+
+        conn = get_connection()
+
+        try:
+            with conn.cursor() as cursor:
+
+                cursor.execute("""
+                    UPDATE `tabCH Driver Device`
+                    SET is_active = 0,
+                        modified = NOW(6),
+                        modified_by = %s
+                    WHERE user = %s
+                    AND is_active = 1
+                """, (user_name, user_name))
+
+                conn.commit()
+
+                return cursor.rowcount
+
+        except Exception:
+            conn.rollback()
+            return 0
+
+        finally:
+            conn.close()
+
     # ------------------------------------------------------------------
     # OTP log (tabCH OTP Log)
     # ------------------------------------------------------------------

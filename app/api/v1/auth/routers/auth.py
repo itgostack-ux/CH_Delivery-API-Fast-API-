@@ -34,6 +34,12 @@ def verify_otp(data: OtpVerifyRequest):
     return AuthService.verify_otp(data.email, data.otp)
 
 
+@router.post("/logout", summary="Logout: invalidates the current token and deactivates the user's app devices")
+def logout(user: dict = Depends(get_current_user)):
+
+    return {"success": True, **AuthService.logout(user)}
+
+
 @router.get("/me", summary="Current user from token")
 def me(user: dict = Depends(get_current_user)):
 

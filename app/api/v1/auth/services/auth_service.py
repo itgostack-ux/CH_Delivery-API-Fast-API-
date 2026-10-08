@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from passlib.hash import pbkdf2_sha256
 
 from app.core.email import EmailService
-from app.core.security import create_access_token
+from app.core.security import create_access_token, revoke_token
 from ..repositories.auth_repo import AuthRepository
 
 # Roles the app recognises, highest privilege first. The first one the user
@@ -124,6 +124,22 @@ class AuthService:
             raise HTTPException(status_code=404, detail="No user with this email")
 
         return AuthService._issue_login(user)
+
+    # ------------------------------------------------------------------
+    # Logout
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def logout(user):
+
+        revoke_token(user)
+
+        devices = AuthRepository.deactivate_devices(user["sub"])
+
+        return {
+            "message": "Logged out",
+            "devices_deactivated": devices
+        }
 
     # ------------------------------------------------------------------
     # Shared: roles + token
