@@ -1,11 +1,4 @@
-import secrets
-
 from app.db.session import get_connection
-
-
-def _frappe_id():
-    """10-char random id, same shape Frappe uses for child/comment rows."""
-    return secrets.token_hex(5)
 
 
 class ManifestRepository:
@@ -63,13 +56,28 @@ class ManifestRepository:
 
     @staticmethod
     def get_pending_for_drivers(driver_ids):
-        """Shipments assigned to any of the driver IDs that are still waiting for
-        "Accept & Pick Up" / "Reject Pickup" - one row per shipment, like ERPNext."""
+        """Pickup Pending tab: shipments waiting for Accept & Pick Up / Reject Pickup."""
 
-        if not driver_ids:
+        return ManifestRepository.get_shipments_for_drivers(driver_ids, ("Assigned",))
+
+    @staticmethod
+    def get_shipments_for_drivers(driver_ids, statuses, days=None, limit=200):
+        """One row per shipment (like the ERP driver app tabs) for the given
+        manifest statuses; `days` limits by manifest_date for history tabs."""
+
+        if not driver_ids or not statuses:
             return []
 
         placeholders = ", ".join(["%s"] * len(driver_ids))
+        status_ph = ", ".join(["%s"] * len(statuses))
+        params = list(driver_ids) + list(statuses)
+        date_clause = ""
+
+        if days:
+            date_clause = "AND tm.manifest_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)"
+            params.append(days)
+
+        params.append(limit)
 
         conn = get_connection()
 
@@ -95,15 +103,24 @@ class ManifestRepository:
                         COALESCE(tmi.item_count, tm.total_items, 0) AS total_items,
                         COALESCE(tmi.total_qty, tm.total_qty, 0) AS total_qty,
                         tm.box_count,
-                        tm.estimated_delivery_date
+                        tm.estimated_delivery_date,
+                        tm.driver_accepted_at,
+                        tm.pickup_datetime,
+                        tm.delivery_datetime,
+                        tm.receiver_name,
+                        (SELECT GROUP_CONCAT(p.package_label ORDER BY p.idx SEPARATOR ',')
+                           FROM `tabCH Stock Entry Package` p
+                           WHERE p.parent = tmi.stock_entry AND p.parenttype = 'Stock Entry') AS box_labels
                     FROM `tabCH Transfer Manifest` tm
                     LEFT JOIN `tabCH Transfer Manifest Item` tmi ON tmi.parent = tm.name
                     LEFT JOIN `tabStock Entry` se ON se.name = tmi.stock_entry
                     WHERE tm.driver IN ({placeholders})
-                    AND tm.status = 'Assigned'
+                    AND tm.status IN ({status_ph})
                     AND tm.docstatus < 2
-                    ORDER BY tm.manifest_date, tm.stop_sequence, tm.creation, tmi.idx
-                """, driver_ids)
+                    {date_clause}
+                    ORDER BY tm.manifest_date DESC, tm.stop_sequence, tm.creation DESC, tmi.idx
+                    LIMIT %s
+                """, params)
 
                 return cursor.fetchall()
 
@@ -164,16 +181,7 @@ class ManifestRepository:
             conn.close()
 
     @staticmethod
-    def reject(manifest_id, user_email, reason, notes, photo_url=None, commit=True):
-        """Mirror ERPNext's "Reject Pickup" action, in one transaction:
-
-        1. manifest -> Rejected with reason/notes/photo/by/at
-        2. each shipment (Stock Entry) in the manifest -> Rejected / Reverted,
-           pending qty moved to rejected qty, scanned serials cleared
-        3. timeline comment "Stock returned to source (...)" on each shipment
-
-        Steps 2-3 are what ERPNext's dispatch screen reads for its Rejected tab.
-        """
+    def get_stock_entries(manifest_id):
 
         conn = get_connection()
 
@@ -181,94 +189,14 @@ class ManifestRepository:
             with conn.cursor() as cursor:
 
                 cursor.execute("""
-                    UPDATE `tabCH Transfer Manifest`
-                    SET
-                        status = 'Rejected',
-                        rejection_reason = %s,
-                        rejection_notes = %s,
-                        rejection_photo = COALESCE(%s, rejection_photo),
-                        rejected_by = %s,
-                        rejected_at = NOW(6),
-                        rejected_during = 'Pickup',
-                        modified = NOW(6),
-                        modified_by = %s
-                    WHERE name = %s
-                    AND status = 'Assigned'
-                """, (reason, notes, photo_url, user_email, user_email, manifest_id))
-
-                if cursor.rowcount != 1:
-                    conn.rollback()
-                    return False
-
-                cursor.execute("""
                     SELECT stock_entry
                     FROM `tabCH Transfer Manifest Item`
                     WHERE parent = %s
                     AND stock_entry IS NOT NULL
+                    ORDER BY idx
                 """, (manifest_id,))
 
-                stock_entries = [row["stock_entry"] for row in cursor.fetchall()]
-
-                for stock_entry in stock_entries:
-
-                    cursor.execute("""
-                        UPDATE `tabStock Entry`
-                        SET
-                            custom_status = 'Rejected',
-                            custom_status_since = NOW(6),
-                            custom_logistics_status = 'Reverted',
-                            custom_logistics_person = '',
-                            custom_rejected_qty = COALESCE(custom_rejected_qty, 0)
-                                                  + COALESCE(custom_pending_qty, 0),
-                            custom_pending_qty = 0,
-                            modified = NOW(6),
-                            modified_by = %s
-                        WHERE name = %s
-                    """, (user_email, stock_entry))
-
-                    cursor.execute("""
-                        UPDATE `tabStock Entry Detail`
-                        SET
-                            custom_receive_qty = 0,
-                            custom_scanned_serials = '',
-                            custom_final_scanned_serials = '',
-                            modified = NOW(6),
-                            modified_by = %s
-                        WHERE parent = %s
-                        AND parenttype = 'Stock Entry'
-                    """, (user_email, stock_entry))
-
-                    cursor.execute("""
-                        INSERT INTO tabComment
-                        (
-                            name, creation, modified, modified_by, owner,
-                            docstatus, idx, comment_type, comment_email,
-                            reference_doctype, reference_name, content,
-                            published, seen
-                        )
-                        VALUES
-                        (
-                            %s, NOW(6), NOW(6), %s, %s,
-                            0, 0, 'Comment', %s,
-                            'Stock Entry', %s, %s,
-                            0, 0
-                        )
-                    """, (
-                        _frappe_id(), user_email, user_email, user_email,
-                        stock_entry,
-                        f"Stock returned to source ({manifest_id}). Reason: {reason}",
-                    ))
-
-                if commit:
-                    conn.commit()
-                else:
-                    conn.rollback()      # dry run
-
-                return True
-
-        except Exception:
-            conn.rollback()
-            raise
+                return [row["stock_entry"] for row in cursor.fetchall()]
 
         finally:
             conn.close()

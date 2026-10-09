@@ -10,6 +10,15 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def no_cache_openapi(request: Request, call_next):
+    """Browsers cached /openapi.json and kept showing old Swagger forms."""
+    response = await call_next(request)
+    if request.url.path in ("/openapi.json", "/docs"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
 @app.exception_handler(pymysql.err.OperationalError)
 def db_unavailable(request: Request, exc: pymysql.err.OperationalError):
     return JSONResponse(

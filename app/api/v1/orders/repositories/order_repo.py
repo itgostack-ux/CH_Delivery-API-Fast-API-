@@ -12,6 +12,9 @@ ORDER_COLUMNS = """
     se.custom_target_store AS target_store,
     COALESCE(se.custom_total_qty, 0) AS total_qty,
     se.custom_delivery_challan AS delivery_challan,
+    (SELECT GROUP_CONCAT(p.package_label ORDER BY p.idx SEPARATOR ',')
+                           FROM `tabCH Stock Entry Package` p
+                           WHERE p.parent = se.name AND p.parenttype = 'Stock Entry') AS box_labels,
     tm.name AS manifest_id,
     tm.status AS manifest_status,
     tm.manifest_date,

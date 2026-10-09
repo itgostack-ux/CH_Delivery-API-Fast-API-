@@ -131,15 +131,11 @@ class AuthService:
 
     @staticmethod
     def logout(user):
+        """Same as the ERP's Sign Out: token revoked, devices deactivated, driver Offline."""
 
-        revoke_token(user)
+        from app.api.v1.driver.services.driver_service import DriverService
 
-        devices = AuthRepository.deactivate_devices(user["sub"])
-
-        return {
-            "message": "Logged out",
-            "devices_deactivated": devices
-        }
+        return DriverService.sign_out(user)
 
     # ------------------------------------------------------------------
     # Shared: roles + token
@@ -165,6 +161,10 @@ class AuthService:
             )
 
         primary_role = granted[0]
+
+        if "Driver" in granted:
+            from app.api.v1.driver.services.driver_service import DriverService
+            DriverService.on_login(user["email"])
 
         token = create_access_token({
             "sub": user["email"],

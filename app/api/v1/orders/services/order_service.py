@@ -23,6 +23,12 @@ def _serials(row):
     return out
 
 
+def _boxes(row):
+    labels = [x for x in (row.pop("box_labels", None) or "").split(",") if x]
+    row["box_labels"] = labels
+    row["qr"] = labels[0] if labels else None
+
+
 class OrderService:
 
     @staticmethod
@@ -47,6 +53,9 @@ class OrderService:
 
         rows = OrderRepository.list_orders(OrderService._scope(user))
 
+        for row in rows:
+            _boxes(row)
+
         return {"count": len(rows), "data": rows}
 
     @staticmethod
@@ -64,6 +73,7 @@ class OrderService:
                 detail="This order is not assigned to you"
             )
 
+        _boxes(order)
         order["delivery_confirmed"] = bool(order["delivery_confirmed"])
         order["items"] = [{**row, "serials": _serials(row)} for row in order["items"]]
 

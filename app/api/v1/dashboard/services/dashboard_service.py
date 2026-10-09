@@ -44,14 +44,16 @@ class DashboardService:
 
     @staticmethod
     def resolve_scope(user):
-        """Drivers only ever see their own data; managers see every driver."""
-
-        if set(user.get("roles", [])) & MANAGER_ROLES:
-            return {"driver_id": None, "driver_name": None, "driver_ids": None}
+        """Anyone linked to a Driver record sees their own work (this is the
+        driver app's dashboard, even for a System Manager who also drives);
+        managers without a Driver record see every driver."""
 
         drivers = DashboardRepository.get_drivers_for_user(user["sub"])
 
         if not drivers:
+            if set(user.get("roles", [])) & MANAGER_ROLES:
+                return {"driver_id": None, "driver_name": None, "driver_ids": None}
+
             raise HTTPException(
                 status_code=403,
                 detail="No Driver record is linked to this user"
@@ -76,12 +78,17 @@ class DashboardService:
 
         for manifest in today_manifests:
             manifest["orders"] = orders.get(manifest["manifest_id"], [])
+            for order in manifest["orders"]:
+                labels = [x for x in (order.pop("box_labels", None) or "").split(",") if x]
+                order["box_labels"] = labels
+                order["qr"] = labels[0] if labels else None
 
         return {
             "scope": {
                 "role": user.get("role"),
                 "driver_id": scope["driver_id"],
                 "driver_name": scope.get("driver_name"),
+                "driver_ids": scope.get("driver_ids"),
                 "date": today,
             },
             "today": {

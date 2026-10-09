@@ -3,6 +3,11 @@ from fastapi import HTTPException
 from app.core.frappe_client import FrappeClient
 from ..repositories.manifest_repo import ManifestRepository
 
+# Rules copied from the ERP (ch_logistics CH Transfer Manifest.reject_manifest)
+REJECTABLE_STATUSES = ("Assigned", "Pickup Started", "In Transit")
+PICKUP_REASONS = ["Material Not Ready", "Wrong Package", "Store Closed", "Damaged Package", "Other"]
+IN_TRANSIT_REASONS = ["Customer Not Available", "Address Not Found", "Receiver Refused", "Damaged in Transit", "Vehicle Breakdown", "Other"]
+
 ALLOWED_PHOTO_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
 
@@ -57,17 +62,47 @@ class ManifestService:
         return manifest
 
     @staticmethod
-    def pending(user):
+    def _shipments(user, statuses, days=None):
 
         driver_ids = ManifestService._driver_ids_for(user)
-        rows = ManifestRepository.get_pending_for_drivers(driver_ids)
+        rows = ManifestRepository.get_shipments_for_drivers(driver_ids, statuses, days)
+
+        for row in rows:
+            labels = [x for x in (row.pop("box_labels", None) or "").split(",") if x]
+            row["box_labels"] = labels
+            row["qr"] = labels[0] if labels else None
 
         return {"count": len(rows), "data": rows}
 
     @staticmethod
-    def reject_reasons():
+    def pending(user):
+        """Pickup Pending tab (ERP driver app)."""
+        return ManifestService._shipments(user, ("Assigned",))
 
-        return {"reasons": ManifestRepository.get_reject_reasons()}
+    @staticmethod
+    def delivery_pending(user):
+        """Delivery Pending tab: picked up, on the vehicle, not yet delivered."""
+        return ManifestService._shipments(user, ("In Transit", "Pickup Started"))
+
+    @staticmethod
+    def delivered(user, days=30):
+        """Delivered tab: history of completed deliveries."""
+        return ManifestService._shipments(user, ("Delivered", "Partially Received", "Received", "Closed"), days)
+
+    @staticmethod
+    def reject_reasons():
+        """All reasons plus the stage-specific lists the ERP enforces."""
+
+        try:
+            reasons = ManifestRepository.get_reject_reasons()
+        except Exception:
+            reasons = []
+
+        return {
+            "reasons": reasons or sorted(set(PICKUP_REASONS) | set(IN_TRANSIT_REASONS)),
+            "pickup_reasons": PICKUP_REASONS,
+            "in_transit_reasons": IN_TRANSIT_REASONS,
+        }
 
     @staticmethod
     def _read_photo(upload, label):
@@ -93,77 +128,98 @@ class ManifestService:
         return upload.filename, content, upload.content_type
 
     @staticmethod
-    def reject(user, any_id, reason, notes, photo1, photo2):
+    def reject(user, any_id, reason, notes, photo1, photo2, latitude=None, longitude=None):
+        """Reject Pickup / Failed Delivery - delegated to the ERP's own
+        transfer_manifest_api.reject_manifest (whole manifest) or
+        reject_manifest_leg (one shipment of a multi-leg manifest), which creates
+        the CH Manifest Rejection (Pending Review), reverses the stock to source,
+        notifies the dispatcher and feeds the Rejected tab.
+
+        The ERP's rules are checked here first so the driver gets a clear
+        answer before any photo is uploaded:
+          * status must be Assigned / Pickup Started / In Transit
+          * reason must match the stage (pickup vs in-transit list)
+          * both proof photos required, and different from each other
+        """
 
         manifest_id = ManifestService.resolve(any_id)
         driver_ids = ManifestService._driver_ids_for(user)
         manifest = ManifestService._owned_manifest(manifest_id, driver_ids)
 
-        # Photos are optional; validate any that were sent before writing anything
-        photos = [
-            p for p in (
-                ManifestService._read_photo(photo1, "Proof Photo 1"),
-                ManifestService._read_photo(photo2, "Proof Photo 2"),
-            ) if p
-        ]
+        if manifest["status"] not in REJECTABLE_STATUSES:
+            raise HTTPException(status_code=409, detail=f"Only an active pickup or in-transit delivery can be rejected (status '{manifest['status']}')")
 
-        if manifest["status"] == "Rejected":
-            raise HTTPException(status_code=409, detail="Manifest already rejected")
+        stage = "In Transit" if manifest["status"] == "In Transit" else "Pickup"
+        valid = IN_TRANSIT_REASONS if stage == "In Transit" else PICKUP_REASONS
 
-        if manifest["status"] != "Assigned":
-            raise HTTPException(
-                status_code=409,
-                detail=f"Manifest cannot be rejected in status '{manifest['status']}'"
-            )
+        if reason not in valid:
+            raise HTTPException(status_code=422, detail=f"'{reason}' is not a valid {stage.lower()} rejection reason. Allowed: {', '.join(valid)}")
 
-        reasons = ManifestRepository.get_reject_reasons()
+        photos = [ManifestService._read_photo(photo1, "Proof Photo 1"), ManifestService._read_photo(photo2, "Proof Photo 2")]
 
-        if reasons and reason not in reasons:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Invalid reason. Allowed: {', '.join(reasons)}"
-            )
+        if not all(photos):
+            raise HTTPException(status_code=422, detail="Both proof photos are required (FR-024, FR-025).")
 
-        if reason == "Other" and not (notes and notes.strip()):
-            raise HTTPException(
-                status_code=422,
-                detail="notes are required when reason is 'Other'"
-            )
+        if photos[0][1] == photos[1][1]:
+            raise HTTPException(status_code=422, detail="The two proof photos must be different.")
 
-        # Upload any proof photos to ERPNext as attachments of the manifest.
-        # The first also fills the "Rejection Proof Photo" field; the second is
-        # a plain attachment visible in the ERPNext sidebar.
-        photo_urls = []
+        urls = []
 
         for index, (filename, content, content_type) in enumerate(photos, start=1):
+            uploaded = FrappeClient.upload_file(
+                filename=f"reject_{manifest_id}_{index}_{filename}",
+                content=content, content_type=content_type,
+                doctype="CH Transfer Manifest", docname=manifest_id,
+                as_user=user["sub"],
+            )
+            urls.append(uploaded["file_url"])
 
-            try:
-                uploaded = FrappeClient.upload_file(
-                    filename=f"reject_{manifest_id}_{index}_{filename}",
-                    content=content,
-                    content_type=content_type,
-                    doctype="CH Transfer Manifest",
-                    docname=manifest_id,
-                    fieldname="rejection_photo" if index == 1 else None,
-                )
-            except Exception as e:
-                raise HTTPException(status_code=502, detail=f"Photo {index} upload failed: {e}")
+        legs = ManifestRepository.get_stock_entries(manifest_id)
+        wanted = any_id.strip()
+        leg = wanted if wanted in legs else None      # a shipment id rejects just that leg
 
-            photo_urls.append(uploaded["file_url"])
+        # Both parameter spellings are sent: Frappe keeps only the ones the
+        # deployed signature declares (proof_image_1/2 + remarks + lat/lng in
+        # the current source; rejection_photo/_2 + rejection_notes in older builds).
+        args = {
+            "manifest": manifest_id,
+            "rejection_reason": reason,
+            "proof_image_1": urls[0],
+            "proof_image_2": urls[1],
+            "rejection_photo": urls[0],
+            "rejection_photo_2": urls[1],
+            "remarks": notes,
+            "rejection_notes": notes,
+            "latitude": latitude,
+            "longitude": longitude,
+        }
+        if leg:
+            args["stock_entry"] = leg
 
-        first_photo = photo_urls[0] if photo_urls else None
+        result = FrappeClient.call(
+            "ch_logistics.api.transfer_manifest_api." + ("reject_manifest_leg" if leg else "reject_manifest"),
+            args, as_user=user["sub"],
+        )
 
-        if not ManifestRepository.reject(manifest_id, user["sub"], reason, notes, first_photo):
-            raise HTTPException(status_code=409, detail="Manifest changed, please refresh")
+        if isinstance(result, dict) and result.get("ok") is False:
+            raise HTTPException(status_code=400, detail={"message": result.get("message") or "ERPNext refused the rejection", "erp": result})
 
-        updated = ManifestRepository.get_manifest(manifest_id)
+        # a leg rejection splits the shipment into its own manifest; report that one
+        rejected_manifest = result.get("manifest") if isinstance(result, dict) else None
+        updated = ManifestRepository.get_manifest(rejected_manifest or manifest_id)
+
+        if not updated or updated["status"] != "Rejected":
+            raise HTTPException(status_code=409, detail={"message": "ERPNext did not mark the manifest rejected (status %s)" % ((updated or {}).get("status")), "erp": result})
 
         return {
-            "message": "Manifest rejected",
-            "manifest_id": manifest_id,
+            "message": "Shipment rejected. Dispatcher notified." if stage == "Pickup"
+                       else "Failed delivery logged. Dispatch notified; goods will be returned to source.",
+            "manifest_id": updated["manifest_id"],
             "status": updated["status"],
             "trip": updated["trip"],
             "rejected_at": updated["rejected_at"],
             "rejection_reason": updated["rejection_reason"],
-            "rejection_photos": photo_urls,
+            "rejected_during": stage,
+            "rejection_photos": urls,
+            "erp": result,
         }

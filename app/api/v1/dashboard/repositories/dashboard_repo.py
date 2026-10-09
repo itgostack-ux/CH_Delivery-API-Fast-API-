@@ -1,10 +1,25 @@
 from app.db.session import get_connection
 
 
+# A manifest counts as "today's work" when its trip runs today, when it was
+# dated today, or when it was delivered today - not only by manifest_date,
+# because dispatch often attaches older manifests to a trip created today.
+MANIFEST_TODAY = """(
+    tr.trip_date = %s
+    OR tm.manifest_date = %s
+    OR DATE(tm.delivery_datetime) = %s
+    OR DATE(tm.pickup_datetime) = %s
+)"""
+
+ACTIVE_STATUSES = ("Assigned", "Pickup Started", "In Transit")
+
+
 def _scope(driver_ids, on_date, date_column, alias=""):
     """WHERE clause + params for an optional list of driver IDs and optional date.
 
     `alias` prefixes the manifest/trip columns when the query joins tables.
+    For manifests (alias "tm.") the date test is MANIFEST_TODAY (needs the
+    `tr` trip join); for trips it is the plain date column.
     """
 
     clauses, params = [f"{alias}docstatus < 2"], []
@@ -14,8 +29,12 @@ def _scope(driver_ids, on_date, date_column, alias=""):
         params.extend(driver_ids)
 
     if on_date:
-        clauses.append(f"{alias}{date_column} = %s")
-        params.append(on_date)
+        if alias == "tm.":
+            clauses.append(MANIFEST_TODAY)
+            params.extend([on_date] * 4)
+        else:
+            clauses.append(f"{alias}{date_column} = %s")
+            params.append(on_date)
 
     return " AND ".join(clauses), params
 
@@ -65,7 +84,7 @@ class DashboardRepository:
     @staticmethod
     def manifest_summary(driver_ids=None, on_date=None):
 
-        where, params = _scope(driver_ids, on_date, "manifest_date")
+        where, params = _scope(driver_ids, on_date, "manifest_date", alias="tm.")
 
         conn = get_connection()
 
@@ -74,13 +93,14 @@ class DashboardRepository:
 
                 cursor.execute(f"""
                     SELECT
-                        status,
+                        tm.status,
                         COUNT(*) AS n,
-                        COALESCE(SUM(total_items), 0) AS items,
-                        COALESCE(SUM(total_qty), 0) AS qty
-                    FROM `tabCH Transfer Manifest`
+                        COALESCE(SUM(tm.total_items), 0) AS items,
+                        COALESCE(SUM(tm.total_qty), 0) AS qty
+                    FROM `tabCH Transfer Manifest` tm
+                    LEFT JOIN `tabCH Logistics Trip` tr ON tr.name = tm.trip
                     WHERE {where}
-                    GROUP BY status
+                    GROUP BY tm.status
                 """, params)
 
                 return cursor.fetchall()
@@ -131,6 +151,8 @@ class DashboardRepository:
                     FROM `tabCH Transfer Manifest Item` tmi
                     JOIN `tabCH Transfer Manifest` tm
                         ON tm.name = tmi.parent
+                    LEFT JOIN `tabCH Logistics Trip` tr
+                        ON tr.name = tm.trip
                     LEFT JOIN `tabStock Entry` se
                         ON se.name = tmi.stock_entry
                     WHERE {where}
@@ -167,7 +189,10 @@ class DashboardRepository:
                         se.to_warehouse,
                         COALESCE(tmi.total_qty, se.custom_total_qty, 0) AS qty,
                         se.custom_delivery_challan AS delivery_challan,
-                        COALESCE(tmi.material_request, se.custom_material_request) AS material_request
+                        COALESCE(tmi.material_request, se.custom_material_request) AS material_request,
+                        (SELECT GROUP_CONCAT(p.package_label ORDER BY p.idx SEPARATOR ',')
+                           FROM `tabCH Stock Entry Package` p
+                           WHERE p.parent = tmi.stock_entry AND p.parenttype = 'Stock Entry') AS box_labels
                     FROM `tabCH Transfer Manifest Item` tmi
                     LEFT JOIN `tabStock Entry` se
                         ON se.name = tmi.stock_entry
@@ -187,14 +212,15 @@ class DashboardRepository:
             conn.close()
 
     @staticmethod
-    def manifests_on(on_date, driver_ids=None, limit=50, status="Assigned"):
-        """Manifests for the day; by default only the ones still to be handled (Assigned)."""
+    def manifests_on(on_date, driver_ids=None, limit=50, statuses=ACTIVE_STATUSES):
+        """Work on hand: every active manifest in scope (Assigned / Pickup
+        Started / In Transit) whatever its date, plus the ones delivered on
+        `on_date` - i.e. what the driver sees on the ERP board today."""
 
-        where, params = _scope(driver_ids, on_date, "manifest_date")
+        where, params = _scope(driver_ids, None, "manifest_date", alias="tm.")
 
-        if status:
-            where += " AND status = %s"
-            params.append(status)
+        where += " AND (tm.status IN (" + ", ".join(["%s"] * len(statuses)) + ") OR DATE(tm.delivery_datetime) = %s)"
+        params.extend(list(statuses) + [on_date])
 
         conn = get_connection()
 
@@ -203,18 +229,28 @@ class DashboardRepository:
 
                 cursor.execute(f"""
                     SELECT
-                        name AS manifest_id,
-                        manifest_date,
-                        status,
-                        source_store,
-                        destination_store,
-                        trip,
-                        shipment_priority AS priority,
-                        COALESCE(total_items, 0) AS total_items,
-                        COALESCE(total_qty, 0) AS total_qty
-                    FROM `tabCH Transfer Manifest`
+                        tm.name AS manifest_id,
+                        tm.manifest_date,
+                        tr.trip_date,
+                        tm.status,
+                        tm.source_store,
+                        tm.destination_store,
+                        tm.trip,
+                        tr.status AS trip_status,
+                        tm.driver,
+                        tm.driver_name,
+                        tm.stop_sequence,
+                        tm.shipment_priority AS priority,
+                        COALESCE(tm.total_items, 0) AS total_items,
+                        COALESCE(tm.total_qty, 0) AS total_qty,
+                        tm.driver_accepted_at,
+                        tm.pickup_datetime,
+                        tm.delivery_datetime
+                    FROM `tabCH Transfer Manifest` tm
+                    LEFT JOIN `tabCH Logistics Trip` tr ON tr.name = tm.trip
                     WHERE {where}
-                    ORDER BY stop_sequence, creation DESC
+                    ORDER BY FIELD(tm.status, 'In Transit', 'Pickup Started', 'Assigned', 'Delivered'),
+                             tr.trip_date DESC, tm.stop_sequence, tm.creation DESC
                     LIMIT %s
                 """, params + [limit])
 

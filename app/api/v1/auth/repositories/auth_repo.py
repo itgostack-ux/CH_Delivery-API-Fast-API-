@@ -99,6 +99,26 @@ class AuthRepository:
             conn.close()
 
     @staticmethod
+    def get_driver_ids_for_user(email):
+
+        conn = get_connection()
+
+        try:
+            with conn.cursor() as cursor:
+
+                cursor.execute("""
+                    SELECT name
+                    FROM tabDriver
+                    WHERE user = %s
+                    ORDER BY creation
+                """, (email,))
+
+                return [row["name"] for row in cursor.fetchall()]
+
+        finally:
+            conn.close()
+
+    @staticmethod
     def deactivate_devices(user_name):
         """Stop push notifications for the user's registered app devices."""
 

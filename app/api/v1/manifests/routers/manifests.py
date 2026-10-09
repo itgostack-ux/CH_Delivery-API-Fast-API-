@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from app.core.security import require_roles
 from ..schemas.manifest_schema import (
+    BoxesResponse,
     DeliverResponse,
     ManifestActionResponse,  # noqa: F401 (reject response)
     PendingManifestsResponse,
@@ -32,6 +33,18 @@ def pending(user: dict = Depends(driver_only)):
     return ManifestService.pending(user)
 
 
+@router.get("/delivery-pending", response_model=PendingManifestsResponse, summary="Delivery Pending tab: shipments I have picked up and still need to deliver")
+def delivery_pending(user: dict = Depends(driver_only)):
+
+    return ManifestService.delivery_pending(user)
+
+
+@router.get("/delivered", response_model=PendingManifestsResponse, summary="Delivered tab: my completed deliveries (last 30 days)")
+def delivered(user: dict = Depends(driver_only)):
+
+    return ManifestService.delivered(user)
+
+
 @router.get("/reject-reasons", response_model=RejectReasonsResponse, summary="Allowed rejection reasons (public)")
 def reject_reasons():
 
@@ -41,18 +54,20 @@ def reject_reasons():
 @router.post(
     "/{manifest_id}/reject",
     response_model=ManifestActionResponse,
-    summary="Reject Pickup: reason (+ optional notes and proof photos)",
+    summary="Reject Pickup / Failed Delivery: reason + 2 different proof photos (+ notes, GPS) - ERP rules",
 )
 def reject(
     manifest_id: str,
-    reason: str = Form(..., description="One of GET /manifests/reject-reasons"),
+    reason: str = Form(..., description="Pickup: Material Not Ready | Wrong Package | Store Closed | Damaged Package | Other. In transit: Customer Not Available | Address Not Found | Receiver Refused | Damaged in Transit | Vehicle Breakdown | Other"),
+    photo1: UploadFile = File(..., description="Proof Photo 1 (JPEG/PNG/WEBP, max 10 MB)"),
+    photo2: UploadFile = File(..., description="Proof Photo 2 - must be a different photo"),
     notes: str | None = Form(None, max_length=1000),
-    photo1: UploadFile | None = File(None, description="Optional proof photo 1 (JPEG/PNG/WEBP, max 10 MB)"),
-    photo2: UploadFile | None = File(None, description="Optional proof photo 2 (JPEG/PNG/WEBP, max 10 MB)"),
+    latitude: float | None = Form(None),
+    longitude: float | None = Form(None),
     user: dict = Depends(driver_only),
 ):
 
-    return ManifestService.reject(user, manifest_id, reason, notes, photo1, photo2)
+    return ManifestService.reject(user, manifest_id, reason, notes, photo1, photo2, latitude, longitude)
 
 
 # ----------------------------------------------------------------------
@@ -66,16 +81,30 @@ def reject(
 )
 def pickup(
     manifest_id: str,
-    qr: str = Form(..., description="Scanned QR (shipment id, e.g. GFTNMT26000183)"),
-    photos: list[UploadFile] = File(..., description="At least one photo of the goods"),
-    latitude: float | None = Form(None),
-    longitude: float | None = Form(None),
-    gps_accuracy_m: float | None = Form(None),
-    location_note: str | None = Form(None, description="Why no location, e.g. 'Phone Has No GPS'"),
+    qr: str = Form(..., description="Scanned box label from GET /boxes (e.g. GFTNDC26000355-B01)"),
+    additional_qrs: str | None = Form(None, description="Other box labels, comma-separated (multi-box shipments)"),
+    photo1: UploadFile = File(..., description="Photo of the goods (required)"),
+    photo2: UploadFile | None = File(None, description="Optional extra photo"),
+    photo3: UploadFile | None = File(None, description="Optional extra photo"),
+    latitude: float | None = Form(None, description="GPS latitude, e.g. 13.0885"),
+    longitude: float | None = Form(None, description="GPS longitude, e.g. 80.2435"),
+    gps_accuracy_m: float | None = Form(None, description="GPS accuracy in metres, e.g. 7.2"),
+    location_note: str | None = Form(None, description="Only when no GPS: e.g. 'Phone Has No GPS'"),
+    override_empty_stops: bool = Form(False, description="Set true after the driver confirms starting a trip that has empty stops (ERP asks the same)"),
     user: dict = Depends(driver_only),
 ):
 
-    return DeliveryService.pickup(user, manifest_id, qr, photos, latitude, longitude, gps_accuracy_m, location_note)
+    return DeliveryService.pickup(user, manifest_id, qr, [photo1, photo2, photo3], latitude, longitude, gps_accuracy_m, location_note, additional_qrs, override_empty_stops)
+
+
+@router.get(
+    "/{manifest_id}/boxes",
+    response_model=BoxesResponse,
+    summary="Box labels to scan for this shipment (e.g. GFTNDC26000355-B01)",
+)
+def boxes(manifest_id: str, user: dict = Depends(driver_only)):
+
+    return DeliveryService.boxes(user, manifest_id)
 
 
 @router.get(
@@ -91,14 +120,11 @@ def receivers(manifest_id: str, user: dict = Depends(driver_only)):
 @router.post(
     "/{manifest_id}/delivery-otp",
     response_model=SendOtpResponse,
-    summary="Send OTP: emails a delivery OTP to the chosen receiver",
+    summary="Send OTP to the chosen receiver (ERP request_delivery_otp)",
 )
-def send_delivery_otp(manifest_id: str, data: SendOtpRequest, request: Request, user: dict = Depends(driver_only)):
+def send_delivery_otp(manifest_id: str, data: SendOtpRequest, user: dict = Depends(driver_only)):
 
-    return DeliveryService.send_delivery_otp(
-        user, manifest_id, data.receiver,
-        ip_address=request.client.host if request.client else None,
-    )
+    return DeliveryService.send_delivery_otp(user, manifest_id, data.receiver)
 
 
 @router.post(
@@ -108,15 +134,19 @@ def send_delivery_otp(manifest_id: str, data: SendOtpRequest, request: Request, 
 )
 def deliver(
     manifest_id: str,
-    qr: str = Form(..., description="Scanned QR (shipment id, e.g. GFTNMT26000183)"),
-    receiver_name: str = Form(..., description="Who is signing for it at the store"),
-    otp: str = Form(..., min_length=6, max_length=6, pattern=r"^\d{6}$", description="Delivery OTP from the receiver"),
-    photos: list[UploadFile] = File(..., description="At least one photo of the goods"),
-    latitude: float | None = Form(None),
-    longitude: float | None = Form(None),
-    gps_accuracy_m: float | None = Form(None),
-    location_note: str | None = Form(None, description="Why no location, e.g. 'Location Permission Blocked on Device'"),
+    qr: str = Form(..., description="Scanned box label from GET /boxes (e.g. GFTNDC26000355-B01)"),
+    additional_qrs: str | None = Form(None, description="Other box labels, comma-separated (multi-box shipments)"),
+    receiver_name: str = Form(..., description="Receiver name exactly as returned by GET /receivers"),
+    otp: str = Form(..., min_length=4, max_length=8, description="Delivery OTP the receiver got"),
+    photo1: UploadFile = File(..., description="Photo of the delivery (required)"),
+    photo2: UploadFile | None = File(None, description="Optional extra photo"),
+    photo3: UploadFile | None = File(None, description="Optional extra photo"),
+    latitude: float | None = Form(None, description="GPS latitude, e.g. 12.9594"),
+    longitude: float | None = Form(None, description="GPS longitude, e.g. 80.2559"),
+    gps_accuracy_m: float | None = Form(None, description="GPS accuracy in metres"),
+    location_note: str | None = Form(None, description="Only when no GPS: e.g. 'Location Permission Blocked on Device'"),
+    actual_distance_km: float | None = Form(None, ge=0, description="Actual Distance (km) driven for this delivery - optional"),
     user: dict = Depends(driver_only),
 ):
 
-    return DeliveryService.deliver(user, manifest_id, qr, receiver_name, otp, photos, latitude, longitude, gps_accuracy_m, location_note)
+    return DeliveryService.deliver(user, manifest_id, qr, receiver_name, otp, [photo1, photo2, photo3], latitude, longitude, gps_accuracy_m, location_note, additional_qrs, actual_distance_km)

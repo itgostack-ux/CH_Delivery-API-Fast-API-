@@ -1,31 +1,53 @@
-import hashlib
-import hmac
-import secrets
-from datetime import datetime
+"""Pickup & delivery, delegated to the ERP's own driver-app methods.
+
+The ERPNext "Delivery App" page calls these whitelisted methods; the API calls
+exactly the same ones, as the same driver user, so behaviour is identical:
+
+    ch_logistics.api.logistics_api.driver_accept_manifest_row   Accept & Pick Up
+    ch_logistics.api.transfer_manifest_api.delivery_receivers    Receiver list
+    ch_logistics.api.transfer_manifest_api.request_delivery_otp  Send OTP
+    ch_logistics.api.transfer_manifest_api.driver_complete_delivery_row  Confirm & Deliver
+"""
+
+import json
 
 from fastapi import HTTPException
 
-from app.core.config import settings
-from app.core.email import EmailService
 from app.core.frappe_client import FrappeClient
 from ..repositories.delivery_repo import DeliveryRepository
-from ..repositories.manifest_repo import ManifestRepository
 from .manifest_service import ManifestService
 
-OTP_EXPIRES_MINUTES = 10
+LOGISTICS = "ch_logistics.api.logistics_api."
+MANIFEST = "ch_logistics.api.transfer_manifest_api."
 
 
-def _digest(manifest_id, otp):
-    """Same shape ERPNext stores: 'hmac-sha256$<hex>'."""
-    mac = hmac.new(settings.JWT_SECRET.encode(), f"{manifest_id}:{otp}".encode(), hashlib.sha256)
-    return "hmac-sha256$" + mac.hexdigest()
+def _ensure_ok(result, failed_status=400):
+    """ERP driver methods answer HTTP 200 even when the action failed and put
+    the verdict in the payload ({"ok": false, "message": ...}). Turn that into
+    an error so the app never sees "success" for a failed action."""
+
+    if isinstance(result, dict) and result.get("ok") is False:
+        message = result.get("message") or "ERPNext refused the action"
+        status = 401 if result.get("otp_valid") is False else failed_status
+        raise HTTPException(status_code=status, detail={"message": message, "erp": result})
+
+    return result
 
 
-def _mask_email(email):
-    local, _, domain = email.partition("@")
-    if len(local) <= 2:
-        return f"{local[0]}***@{domain}"
-    return f"{local[0]}***{local[-1]}@{domain}"
+def _clean_note(note):
+    return None if not note or note.strip().lower() == "string" else note.strip()
+
+
+def _split_qrs(value):
+    """Comma-separated extra box labels; ignores Swagger's 'string' placeholder."""
+
+    if not value:
+        return []
+
+    if isinstance(value, str):
+        return [q.strip() for q in value.split(",") if q.strip() and q.strip().lower() != "string"]
+
+    return list(value)
 
 
 class DeliveryService:
@@ -36,8 +58,8 @@ class DeliveryService:
 
     @staticmethod
     def _owned(user, any_id):
-        """`any_id` may be the manifest id, the shipment id (GFTNMT...) or the
-        delivery challan (GFTNDC...), exactly as the ERPNext dialogs show them."""
+        """Resolve manifest id / shipment id (GFTNMT...) / challan (GFTNDC...)
+        and make sure it is assigned to one of this user's Driver records."""
 
         manifest_id = ManifestService.resolve(any_id)
         driver_ids = ManifestService._driver_ids_for(user)
@@ -52,59 +74,57 @@ class DeliveryService:
         if manifest["driver"] not in driver_ids:
             raise HTTPException(status_code=403, detail="This manifest is not assigned to you")
 
+        # which shipment (leg) was addressed - the one named, else the first
+        legs = [i["stock_entry"] for i in manifest["items"] if i["stock_entry"]]
+        wanted = any_id.strip()
+        manifest["stock_entry"] = wanted if wanted in legs else (legs[0] if legs else None)
+        manifest["legs"] = legs
+
         return manifest
 
     @staticmethod
-    def _check_qr(manifest, qr):
-        """The QR on the package carries the shipment id (Stock Entry); also
-        accept the manifest id or its QR payload."""
-
-        accepted = {manifest["manifest_id"], manifest["qr_payload"], manifest["tracking_token"]}
-        accepted |= {i["stock_entry"] for i in manifest["items"]}
-        accepted.discard(None)
-
-        if (qr or "").strip() not in accepted:
-            raise HTTPException(status_code=422, detail="Scanned QR does not belong to this manifest")
-
-    @staticmethod
-    def _read_photos(uploads):
+    def _upload_photos(user, manifest_id, uploads, stage):
+        """Validate + upload photos to ERPNext as the driver; returns file URLs."""
 
         photos = [p for p in (ManifestService._read_photo(u, f"Photo {i + 1}") for i, u in enumerate(uploads or [])) if p]
 
         if not photos:
-            raise HTTPException(status_code=422, detail="At least one photo of the goods is required")
-
-        if not (settings.FRAPPE_API_KEY and settings.FRAPPE_API_SECRET):
-            raise HTTPException(
-                status_code=503,
-                detail="Photo upload needs FRAPPE_API_KEY / FRAPPE_API_SECRET in app/.env "
-                       "(ERPNext: User > API Access > Generate Keys)"
-            )
-
-        return photos
-
-    @staticmethod
-    def _upload_photos(manifest_id, photos, stage):
-        """Upload to ERPNext; the first photo fills the manifest's <stage>_photo field."""
+            raise HTTPException(status_code=422, detail=f"Take at least one photo of the {'goods' if stage == 'pickup' else 'delivery'}")
 
         urls = []
 
         for index, (filename, content, content_type) in enumerate(photos, start=1):
-            try:
-                uploaded = FrappeClient.upload_file(
-                    filename=f"{stage}_{manifest_id}_{index}_{filename}",
-                    content=content,
-                    content_type=content_type,
-                    doctype="CH Transfer Manifest",
-                    docname=manifest_id,
-                    fieldname=f"{stage}_photo" if index == 1 else None,
-                )
-            except Exception as e:
-                raise HTTPException(status_code=502, detail=f"Photo {index} upload failed: {e}")
-
+            uploaded = FrappeClient.upload_file(
+                filename=f"{stage}_{manifest_id}_{index}_{filename}",
+                content=content, content_type=content_type,
+                doctype="CH Transfer Manifest", docname=manifest_id,
+                as_user=user["sub"],
+            )
             urls.append(uploaded["file_url"])
 
         return urls
+
+    # ------------------------------------------------------------------
+    # Box labels (the QR codes printed on the boxes)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def boxes(user, any_id):
+        """Labels the driver must scan at pickup and delivery, e.g. GFTNDC26000355-B01.
+        Same ERP method the Delivery App uses (get_stock_entry_box_labels)."""
+
+        manifest = DeliveryService._owned(user, any_id)
+        labels = FrappeClient.call(LOGISTICS + "get_stock_entry_box_labels",
+                                   {"stock_entry": manifest["stock_entry"]}, as_user=user["sub"]) or []
+
+        return {
+            "manifest_id": manifest["manifest_id"],
+            "shipment_id": manifest["stock_entry"],
+            "delivery_challan": labels[0].rsplit("-B", 1)[0] if labels else None,
+            "box_count": len(labels),
+            "box_labels": labels,
+            "hint": "Scan every label; send the first as `qr` and the rest as `additional_qrs` (comma-separated).",
+        }
 
     # ------------------------------------------------------------------
     # Receivers
@@ -114,162 +134,217 @@ class DeliveryService:
     def receivers(user, any_id):
 
         manifest = DeliveryService._owned(user, any_id)
-        manifest_id = manifest["manifest_id"]
-        rows = DeliveryRepository.get_receivers(manifest["destination_store"])
+
+        rows = FrappeClient.call(MANIFEST + "delivery_receivers",
+                                 {"manifest": manifest["manifest_id"], "stock_entry": manifest["stock_entry"]},
+                                 as_user=user["sub"]) or []
 
         return {
-            "manifest_id": manifest_id,
+            "manifest_id": manifest["manifest_id"],
+            "shipment_id": manifest["stock_entry"],
             "store": manifest["destination_store"],
             "receivers": [
-                {"email": r["email"], "full_name": r["full_name"], "first_name": r["first_name"],
-                 "mobile_no": r["mobile_no"], "is_home_store": bool(r["is_home_store"])}
+                {"id": r.get("name"), "name": r.get("executive_name"),
+                 "has_email": bool(r.get("has_email")), "has_mobile": bool(r.get("has_mobile"))}
                 for r in rows
             ],
         }
 
     # ------------------------------------------------------------------
-    # Pickup
+    # Accept & Pick Up
     # ------------------------------------------------------------------
 
     @staticmethod
-    def pickup(user, any_id, qr, photos, lat, lng, accuracy, location_note):
+    def pickup(user, any_id, qr, photos, lat, lng, accuracy, location_note, additional_qrs=None, override_empty_stops=False):
+
+        additional_qrs = _split_qrs(additional_qrs)
+        location_note = _clean_note(location_note)
 
         manifest = DeliveryService._owned(user, any_id)
-        manifest_id = manifest["manifest_id"]
+        mid, se = manifest["manifest_id"], manifest["stock_entry"]
 
         if manifest["status"] != "Assigned":
             raise HTTPException(status_code=409, detail=f"Pickup not allowed in status '{manifest['status']}'")
 
-        DeliveryService._check_qr(manifest, qr)
-        photo_data = DeliveryService._read_photos(photos)
-        urls = DeliveryService._upload_photos(manifest_id, photo_data, "pickup")
+        if not manifest["trip"]:
+            raise HTTPException(status_code=409, detail="Manifest is not attached to a trip yet")
 
-        result = DeliveryRepository.pickup(manifest, user["sub"], qr.strip(), urls[0], lat, lng, accuracy)
+        urls = DeliveryService._upload_photos(user, mid, photos, "pickup")
 
-        if not result:
-            raise HTTPException(status_code=409, detail="Manifest changed, please refresh")
+        args = {
+            "trip": manifest["trip"],
+            "manifest": mid,
+            "stock_entry": se,
+            "pickup_photo": urls[0],
+            "pickup_photos": json.dumps(urls),
+            "scanned_qr": qr.strip(),
+            "additional_scanned_qrs": json.dumps(additional_qrs or []),
+            "lat": lat,
+            "lng": lng,
+            "gps_accuracy_m": accuracy,
+            "no_location_reason": location_note if lat is None or lng is None else None,
+            "override_empty_stops": 1 if override_empty_stops else 0,
+        }
 
-        updated = DeliveryRepository.get_manifest(manifest_id)
+        try:
+            result = _ensure_ok(FrappeClient.call(LOGISTICS + "driver_accept_manifest_row", args, as_user=user["sub"]))
+        except HTTPException as e:
+            # Same pre-flight as the ERP driver app: it warns about empty stops
+            # and lets the driver continue; the app should confirm and resend.
+            if "have no shipments assigned" in str(e.detail) and not override_empty_stops:
+                raise HTTPException(status_code=409, detail={
+                    "code": "EMPTY_STOPS",
+                    "message": str(e.detail),
+                    "action": "Ask the driver to confirm, then resend with override_empty_stops=true",
+                })
+            raise
+
+        updated = DeliveryRepository.get_manifest(mid)
 
         return {
-            "message": "Pickup confirmed, shipment in transit",
-            "manifest_id": manifest_id,
+            "message": "Shipment accepted and picked up",
+            "manifest_id": mid,
+            "shipment_id": se,
             "status": updated["status"],
             "trip": updated["trip"],
-            "trip_started": result["trip_started"],
             "pickup_datetime": updated["pickup_datetime"],
             "location": {"latitude": lat, "longitude": lng, "accuracy_m": accuracy, "note": location_note},
             "photos": urls,
+            "erp": result,
         }
 
     # ------------------------------------------------------------------
-    # Delivery OTP
+    # Send OTP
     # ------------------------------------------------------------------
 
     @staticmethod
-    def send_delivery_otp(user, any_id, receiver, ip_address=None):
+    def send_delivery_otp(user, any_id, receiver):
 
         manifest = DeliveryService._owned(user, any_id)
-        manifest_id = manifest["manifest_id"]
+        mid = manifest["manifest_id"]
 
         if manifest["status"] != "In Transit":
-            raise HTTPException(status_code=409, detail=f"Delivery OTP only for 'In Transit' manifests (current: '{manifest['status']}')")
+            raise HTTPException(status_code=409, detail=f"Delivery OTP only for 'In Transit' shipments (current: '{manifest['status']}')")
 
-        candidates = DeliveryRepository.get_receivers(manifest["destination_store"])
-        match = next((r for r in candidates if receiver.strip().lower() in
-                      {(r["email"] or "").lower(), (r["full_name"] or "").lower(), (r["first_name"] or "").lower()}), None)
+        # `receiver` may be the executive's id or display name from /receivers;
+        # an unknown value is sent as free text (store with no roster), like the ERP.
+        rows = FrappeClient.call(MANIFEST + "delivery_receivers",
+                                 {"manifest": mid, "stock_entry": manifest["stock_entry"]}, as_user=user["sub"]) or []
+        match = next((r for r in rows if receiver.strip().lower() in
+                      {str(r.get("name", "")).lower(), str(r.get("executive_name", "")).lower()}), None)
 
-        if not match:
-            raise HTTPException(status_code=422, detail=f"Receiver must be a user of store {manifest['destination_store']} (see /receivers)")
+        if rows and not match:
+            raise HTTPException(status_code=422, detail="Choose a receiver from GET /receivers for this store")
 
-        otp = f"{secrets.randbelow(10**6):06d}"
-        masked = _mask_email(match["email"])
+        info = FrappeClient.call(MANIFEST + "request_delivery_otp",
+                                 {"manifest": mid, "receiver": match["name"] if match else None},
+                                 as_user=user["sub"]) or {}
 
-        log_name = DeliveryRepository.create_delivery_otp(
-            manifest, user["sub"], _digest(manifest_id, otp), OTP_EXPIRES_MINUTES, masked, ip_address
-        )
+        sent_to = list(info.get("masked_emails") or []) + list(info.get("masked_mobiles") or [])
 
-        stock_entries = ", ".join(i["stock_entry"] for i in manifest["items"] if i["stock_entry"])
-
-        try:
-            EmailService.send_mail(
-                to=match["email"],
-                subject=f"Delivery OTP for {manifest_id}",
-                html=f"""
-                <html><body style="font-family:Arial;padding:20px;">
-                  <h2 style="margin-top:0;">Delivery OTP</h2>
-                  <p>Hi {match['full_name'] or match['email']},</p>
-                  <p>Driver <b>{manifest['driver_name'] or manifest['driver']}</b> is delivering
-                     <b>{manifest_id}</b> ({stock_entries}) to <b>{manifest['destination_store']}</b>.</p>
-                  <p>Share this OTP with the driver only after checking the goods:</p>
-                  <p style="font-size:32px;letter-spacing:8px;font-weight:bold;">{otp}</p>
-                  <p style="color:#777;font-size:12px;">Valid for {OTP_EXPIRES_MINUTES} minutes.</p>
-                </body></html>
-                """,
-            )
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"OTP saved but email failed: {e}")
+        # The ERP reports "sent" as soon as it hands the mail to its queue; check
+        # whether the mail really left, so the app can warn the driver.
+        queued = DeliveryRepository.otp_email_status(mid)
+        if queued is None:
+            email_status = "not_queued"
+            warning = "ERPNext did not queue the OTP email (its outgoing email account is failing). The receiver can read the OTP in their ERPNext notifications."
+        elif queued["status"] == "Sent":
+            email_status, warning = "sent", None
+        else:
+            email_status = queued["status"].lower().replace(" ", "_")
+            warning = f"OTP email is '{queued['status']}' in ERPNext: {queued['error'] or 'outgoing email problem'}"
 
         return {
-            "message": f"OTP sent to {masked}",
-            "manifest_id": manifest_id,
-            "receiver": match["full_name"] or match["email"],
-            "sent_to": masked,
-            "otp_log": log_name,
-            "expires_in_seconds": OTP_EXPIRES_MINUTES * 60,
+            "message": (f"OTP sent to {', '.join(sent_to)}" if sent_to else "OTP generated, but no contact was reachable - ask the receiver")
+                       + (f". WARNING: {warning}" if warning else ""),
+            "manifest_id": mid,
+            "receiver": match["executive_name"] if match else receiver,
+            "sent_to": sent_to,
+            "email_status": email_status,
+            "warning": warning,
+            "resend_after_seconds": info.get("resend_after_seconds", 120),
         }
 
     # ------------------------------------------------------------------
-    # Deliver
+    # Confirm & Deliver
     # ------------------------------------------------------------------
 
     @staticmethod
-    def deliver(user, any_id, qr, receiver_name, otp, photos, lat, lng, accuracy, location_note):
+    def deliver(user, any_id, qr, receiver_name, otp, photos, lat, lng, accuracy, location_note, additional_qrs=None, actual_distance_km=None):
+
+        additional_qrs = _split_qrs(additional_qrs)
+        location_note = _clean_note(location_note)
+
+        if actual_distance_km is not None and actual_distance_km < 0:
+            raise HTTPException(status_code=422, detail="actual_distance_km cannot be negative")
 
         manifest = DeliveryService._owned(user, any_id)
-        manifest_id = manifest["manifest_id"]
+        mid, se = manifest["manifest_id"], manifest["stock_entry"]
 
         if manifest["status"] != "In Transit":
             raise HTTPException(status_code=409, detail=f"Delivery not allowed in status '{manifest['status']}'")
 
-        DeliveryService._check_qr(manifest, qr)
+        urls = DeliveryService._upload_photos(user, mid, photos, "delivery")
 
-        # OTP check (before photos are uploaded, so a wrong OTP costs nothing)
-        log = DeliveryRepository.get_otp_log(manifest["delivery_otp_log"]) if manifest["delivery_otp_log"] else None
+        result = _ensure_ok(FrappeClient.call(MANIFEST + "driver_complete_delivery_row", {
+            "manifest": mid,
+            "stock_entry": se,
+            "delivery_photo": urls[0],
+            "delivery_photos": json.dumps(urls),
+            "receiver_name": receiver_name.strip(),
+            "scanned_qr": qr.strip(),
+            "additional_scanned_qrs": json.dumps(additional_qrs or []),
+            "otp": otp,
+            "lat": lat,
+            "lng": lng,
+            "gps_accuracy_m": accuracy,
+            "no_location_reason": location_note if lat is None or lng is None else None,
+            "actual_distance_km": actual_distance_km,     # kept by the ERP only if its signature declares it
+        }, as_user=user["sub"]))
 
-        if not log or log["status"] != "Pending":
-            raise HTTPException(status_code=400, detail="No active delivery OTP. Send a new one")
+        updated = DeliveryRepository.get_manifest(mid)
 
-        if datetime.now() > log["expires_at"]:
-            raise HTTPException(status_code=400, detail="Delivery OTP has expired. Send a new one")
+        if updated["status"] != "Delivered":
+            raise HTTPException(status_code=409, detail={"message": f"ERPNext did not mark the shipment delivered (status '{updated['status']}')", "erp": result})
 
-        if log["attempts"] >= log["max_attempts"]:
-            raise HTTPException(status_code=400, detail="Too many wrong OTP attempts. Send a new one")
-
-        if not hmac.compare_digest(log["otp_digest"], _digest(manifest_id, otp)):
-            DeliveryRepository.record_otp_attempt(log["name"], manifest_id, user["sub"], False, "Wrong OTP")
-            raise HTTPException(status_code=401, detail="Invalid delivery OTP")
-
-        photo_data = DeliveryService._read_photos(photos)
-        urls = DeliveryService._upload_photos(manifest_id, photo_data, "delivery")
-
-        DeliveryRepository.record_otp_attempt(log["name"], manifest_id, user["sub"], True)
-
-        result = DeliveryRepository.deliver(manifest, user["sub"], qr.strip(), urls[0], receiver_name.strip(), lat, lng, accuracy)
-
-        if not result:
-            raise HTTPException(status_code=409, detail="Manifest changed, please refresh")
-
-        updated = DeliveryRepository.get_manifest(manifest_id)
+        distance = DeliveryService._record_distance(user, mid, se, updated["trip"], actual_distance_km)
 
         return {
             "message": "Delivered",
-            "manifest_id": manifest_id,
+            "manifest_id": mid,
+            "shipment_id": se,
             "status": updated["status"],
             "trip": updated["trip"],
-            "trip_closed": result["trip_closed"],
             "delivery_datetime": updated["delivery_datetime"],
-            "receiver_name": updated["receiver_name"],
+            "receiver_name": updated["receiver_name"] or receiver_name,
             "location": {"latitude": lat, "longitude": lng, "accuracy_m": accuracy, "note": location_note},
+            "actual_distance_km": distance,
             "photos": urls,
+            "erp": result,
         }
+
+    @staticmethod
+    def _record_distance(user, manifest_id, stock_entry, trip, km):
+        """Optional odometer reading from the driver: stored on the shipment row
+        (CH Transfer Manifest Item.distance_km) and added to the trip's
+        total_distance_actual_km. Never fails the delivery."""
+
+        if km is None:
+            return None
+
+        try:
+            row = DeliveryRepository.get_item_row_name(manifest_id, stock_entry)
+            if row:
+                FrappeClient.set_value("CH Transfer Manifest Item", row, "distance_km", km)
+
+            if trip:
+                current = FrappeClient.call("frappe.client.get_value",
+                                            {"doctype": "CH Logistics Trip", "filters": trip,
+                                             "fieldname": "total_distance_actual_km"}) or {}
+                total = float(current.get("total_distance_actual_km") or 0) + float(km)
+                FrappeClient.set_value("CH Logistics Trip", trip, "total_distance_actual_km", round(total, 3))
+
+            return float(km)
+
+        except HTTPException:
+            return float(km)      # delivery already succeeded; distance is best-effort

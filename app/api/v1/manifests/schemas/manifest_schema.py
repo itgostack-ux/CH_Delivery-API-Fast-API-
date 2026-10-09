@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +24,12 @@ class PendingManifest(BaseModel):
     total_qty: float
     box_count: int | None = None
     estimated_delivery_date: date | None = None
+    box_labels: list[str] = []          # QR labels on the boxes, e.g. GFTNDC26000355-B01
+    qr: str | None = None               # first box label = what to send as `qr` at pickup/deliver
+    driver_accepted_at: datetime | None = None
+    pickup_datetime: datetime | None = None
+    delivery_datetime: datetime | None = None
+    receiver_name: str | None = None
 
 
 class PendingManifestsResponse(BaseModel):
@@ -33,22 +40,35 @@ class PendingManifestsResponse(BaseModel):
 
 class RejectReasonsResponse(BaseModel):
     success: bool = True
-    reasons: list[str]
+    reasons: list[str]                      # everything ERPNext accepts
+    pickup_reasons: list[str] = []          # valid while the manifest is Assigned / Pickup Started
+    in_transit_reasons: list[str] = []      # valid while In Transit (failed delivery)
 
 
 class Receiver(BaseModel):
-    email: str
-    full_name: str | None = None
-    first_name: str | None = None
-    mobile_no: str | None = None
-    is_home_store: bool = False
+    """A POS Executive of the destination store (from the ERP's delivery_receivers)."""
+    id: str | None = None
+    name: str | None = None
+    has_email: bool = False
+    has_mobile: bool = False
 
 
 class ReceiversResponse(BaseModel):
     success: bool = True
     manifest_id: str
+    shipment_id: str | None = None
     store: str | None = None
     receivers: list[Receiver]
+
+
+class BoxesResponse(BaseModel):
+    success: bool = True
+    manifest_id: str
+    shipment_id: str | None = None
+    delivery_challan: str | None = None
+    box_count: int
+    box_labels: list[str]
+    hint: str
 
 
 class Location(BaseModel):
@@ -62,16 +82,17 @@ class PickupResponse(BaseModel):
     success: bool = True
     message: str
     manifest_id: str
+    shipment_id: str | None = None
     status: str
     trip: str | None = None
-    trip_started: bool
     pickup_datetime: datetime | None = None
     location: Location
     photos: list[str]
+    erp: Any = None            # raw result of the ERP method, for debugging
 
 
 class SendOtpRequest(BaseModel):
-    receiver: str = Field(description="Receiver email or name, from GET /manifests/{id}/receivers")
+    receiver: str = Field(description="Receiver id or name from GET /manifests/{id}/receivers (free text if the store has no roster)")
 
 
 class SendOtpResponse(BaseModel):
@@ -79,22 +100,25 @@ class SendOtpResponse(BaseModel):
     message: str
     manifest_id: str
     receiver: str
-    sent_to: str
-    otp_log: str
-    expires_in_seconds: int
+    sent_to: list[str]
+    email_status: str = "unknown"       # sent | not_queued | not_sent | error ...
+    warning: str | None = None
+    resend_after_seconds: int
 
 
 class DeliverResponse(BaseModel):
     success: bool = True
     message: str
     manifest_id: str
+    shipment_id: str | None = None
     status: str
     trip: str | None = None
-    trip_closed: bool
     delivery_datetime: datetime | None = None
     receiver_name: str | None = None
     location: Location
+    actual_distance_km: float | None = None
     photos: list[str]
+    erp: Any = None
 
 
 class ManifestActionResponse(BaseModel):
@@ -106,4 +130,6 @@ class ManifestActionResponse(BaseModel):
     driver_accepted_at: datetime | None = None
     rejected_at: datetime | None = None
     rejection_reason: str | None = None
+    rejected_during: str | None = None      # Pickup | In Transit
     rejection_photos: list[str] = []
+    erp: Any = None

@@ -16,6 +16,8 @@ class OrderSummary(BaseModel):
     target_store: str | None = None
     total_qty: float
     delivery_challan: str | None = None
+    box_labels: list[str] = []          # QR labels on the boxes, e.g. GFTNDC26000355-B01
+    qr: str | None = None               # first box label = what to send as `qr` at pickup/deliver
     manifest_id: str | None = None
     manifest_status: str | None = None
     manifest_date: date | None = None
