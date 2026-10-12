@@ -10,9 +10,11 @@ exactly the same ones, as the same driver user, so behaviour is identical:
 """
 
 import json
+import math
 
 from fastapi import HTTPException
 
+from app.core.config import settings
 from app.core.frappe_client import FrappeClient
 from ..repositories.delivery_repo import DeliveryRepository
 from .manifest_service import ManifestService
@@ -36,6 +38,16 @@ def _ensure_ok(result, failed_status=400):
 
 def _clean_note(note):
     return None if not note or note.strip().lower() == "string" else note.strip()
+
+
+def _distance_m(lat1, lng1, lat2, lng2):
+    """Great-circle distance in metres (haversine)."""
+
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = math.radians(lat2 - lat1), math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
 
 
 def _split_qrs(value):
@@ -103,6 +115,96 @@ class DeliveryService:
             urls.append(uploaded["file_url"])
 
         return urls
+
+    # ------------------------------------------------------------------
+    # Drop-location geofence
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _geofence(manifest, lat, lng, accuracy=None):
+        """Where the driver is vs. where the destination store is.
+
+        Returns a dict for the response; the caller decides whether to block."""
+
+        limit = settings.DELIVERY_GEOFENCE_M
+        store = DeliveryRepository.get_store_location(manifest["destination_store"]) or {}
+        store_loc = {
+            "store": manifest["destination_store"],
+            "store_name": store.get("store_name"),
+            "address": store.get("address"),
+            "latitude": store.get("latitude"),
+            "longitude": store.get("longitude"),
+            "maps_url": store.get("google_maps_url"),
+        }
+
+        info = {
+            "store": store_loc,
+            "driver": {"latitude": lat, "longitude": lng, "accuracy_m": accuracy},
+            "limit_m": limit,
+            "distance_m": None,
+            "within_range": None,
+            "enforced": bool(limit) and store_loc["latitude"] is not None and store_loc["longitude"] is not None,
+            "note": None,
+        }
+
+        if not limit:
+            info["note"] = "Geofence disabled (DELIVERY_GEOFENCE_M=0)"
+            return info
+
+        if not info["enforced"]:
+            info["note"] = f"Store {manifest['destination_store']} has no latitude/longitude in ERPNext (CH Store) - location not checked"
+            return info
+
+        if lat is None or lng is None:
+            info["note"] = "GPS location required"
+            return info
+
+        info["distance_m"] = round(_distance_m(lat, lng, store_loc["latitude"], store_loc["longitude"]), 1)
+        info["within_range"] = info["distance_m"] <= limit
+        info["note"] = ("Reached the store" if info["within_range"]
+                        else f"{info['distance_m']:.0f} m from the store, limit is {limit} m")
+        return info
+
+    @staticmethod
+    def _require_at_store(manifest, lat, lng, accuracy=None):
+        """Block the action unless the driver is within the geofence."""
+
+        info = DeliveryService._geofence(manifest, lat, lng, accuracy)
+
+        if not info["enforced"]:
+            return info
+
+        if lat is None or lng is None:
+            raise HTTPException(status_code=422, detail={
+                "code": "LOCATION_REQUIRED",
+                "message": f"Send latitude/longitude: delivery is only allowed within {info['limit_m']} m of {manifest['destination_store']}",
+                "geofence": info,
+            })
+
+        if not info["within_range"]:
+            raise HTTPException(status_code=409, detail={
+                "code": "OUT_OF_RANGE",
+                "message": f"You are {info['distance_m']:.0f} m from {manifest['destination_store']}; move within {info['limit_m']} m of the store to deliver",
+                "geofence": info,
+            })
+
+        return info
+
+    @staticmethod
+    def reached(user, any_id, lat, lng, accuracy=None):
+        """Pre-check for the app: has the driver reached the drop location?
+        Never raises for distance - returns within_range true/false."""
+
+        manifest = DeliveryService._owned(user, any_id)
+        info = DeliveryService._geofence(manifest, lat, lng, accuracy)
+
+        return {
+            "manifest_id": manifest["manifest_id"],
+            "shipment_id": manifest["stock_entry"],
+            "status": manifest["status"],
+            "can_deliver": manifest["status"] == "In Transit" and (info["within_range"] is True or not info["enforced"]),
+            **info,
+        }
 
     # ------------------------------------------------------------------
     # Box labels (the QR codes printed on the boxes)
@@ -284,6 +386,9 @@ class DeliveryService:
         if manifest["status"] != "In Transit":
             raise HTTPException(status_code=409, detail=f"Delivery not allowed in status '{manifest['status']}'")
 
+        # Driver must physically be at the destination store (within DELIVERY_GEOFENCE_M)
+        geofence = DeliveryService._require_at_store(manifest, lat, lng, accuracy)
+
         urls = DeliveryService._upload_photos(user, mid, photos, "delivery")
 
         result = _ensure_ok(FrappeClient.call(MANIFEST + "driver_complete_delivery_row", {
@@ -318,6 +423,7 @@ class DeliveryService:
             "delivery_datetime": updated["delivery_datetime"],
             "receiver_name": updated["receiver_name"] or receiver_name,
             "location": {"latitude": lat, "longitude": lng, "accuracy_m": accuracy, "note": location_note},
+            "geofence": geofence,
             "actual_distance_km": distance,
             "photos": urls,
             "erp": result,

@@ -78,6 +78,39 @@ class Location(BaseModel):
     note: str | None = None          # e.g. "Phone Has No GPS" when no fix was captured
 
 
+class StoreLocation(BaseModel):
+    store: str | None = None
+    store_name: str | None = None
+    address: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    maps_url: str | None = None
+
+
+class DriverLocation(BaseModel):
+    latitude: float | None = None
+    longitude: float | None = None
+    accuracy_m: float | None = None
+
+
+class Geofence(BaseModel):
+    store: StoreLocation
+    driver: DriverLocation
+    limit_m: int
+    distance_m: float | None = None
+    within_range: bool | None = None     # None = not checked (no GPS / store not geocoded)
+    enforced: bool
+    note: str | None = None
+
+
+class ReachedResponse(Geofence):
+    success: bool = True
+    manifest_id: str
+    shipment_id: str | None = None
+    status: str
+    can_deliver: bool
+
+
 class PickupResponse(BaseModel):
     success: bool = True
     message: str
@@ -116,6 +149,7 @@ class DeliverResponse(BaseModel):
     delivery_datetime: datetime | None = None
     receiver_name: str | None = None
     location: Location
+    geofence: Geofence | None = None
     actual_distance_km: float | None = None
     photos: list[str]
     erp: Any = None

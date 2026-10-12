@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from app.core.security import require_roles
 from ..schemas.manifest_schema import (
@@ -7,6 +7,7 @@ from ..schemas.manifest_schema import (
     ManifestActionResponse,  # noqa: F401 (reject response)
     PendingManifestsResponse,
     PickupResponse,
+    ReachedResponse,
     ReceiversResponse,
     RejectReasonsResponse,
     SendOtpRequest,
@@ -117,6 +118,24 @@ def receivers(manifest_id: str, user: dict = Depends(driver_only)):
     return DeliveryService.receivers(user, manifest_id)
 
 
+@router.get(
+    "/{manifest_id}/reached",
+    response_model=ReachedResponse,
+    summary="Has the driver reached the drop location? Distance to the destination store vs the 50 m limit",
+)
+def reached(
+    manifest_id: str,
+    latitude: float = Query(..., description="Driver GPS latitude, e.g. 13.0843"),
+    longitude: float = Query(..., description="Driver GPS longitude, e.g. 80.2623"),
+    gps_accuracy_m: float | None = Query(None, description="GPS accuracy in metres"),
+    user: dict = Depends(driver_only),
+):
+    """Call this when the driver taps Deliver: enable the Confirm & Deliver button
+    only when `within_range` is true. POST /deliver enforces the same rule."""
+
+    return DeliveryService.reached(user, manifest_id, latitude, longitude, gps_accuracy_m)
+
+
 @router.post(
     "/{manifest_id}/delivery-otp",
     response_model=SendOtpResponse,
@@ -141,10 +160,10 @@ def deliver(
     photo1: UploadFile = File(..., description="Photo of the delivery (required)"),
     photo2: UploadFile | None = File(None, description="Optional extra photo"),
     photo3: UploadFile | None = File(None, description="Optional extra photo"),
-    latitude: float | None = Form(None, description="GPS latitude, e.g. 12.9594"),
+    latitude: float | None = Form(None, description="GPS latitude, e.g. 12.9594 - required when the store is geocoded (must be within 50 m)"),
     longitude: float | None = Form(None, description="GPS longitude, e.g. 80.2559"),
     gps_accuracy_m: float | None = Form(None, description="GPS accuracy in metres"),
-    location_note: str | None = Form(None, description="Only when no GPS: e.g. 'Location Permission Blocked on Device'"),
+    location_note: str | None = Form(None, description="Only when no GPS and the store has no geocode: e.g. 'Location Permission Blocked on Device'"),
     actual_distance_km: float | None = Form(None, ge=0, description="Actual Distance (km) driven for this delivery - optional"),
     user: dict = Depends(driver_only),
 ):

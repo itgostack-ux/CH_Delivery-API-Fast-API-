@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     FRAPPE_API_KEY: str | None = None
     FRAPPE_API_SECRET: str | None = None
 
+    # Delivery geofence: the driver must be within this many metres of the
+    # destination store's lat/lng (CH Store) to call /deliver. 0 disables it.
+    DELIVERY_GEOFENCE_M: int = 50
+
     # SMTP (optional: only needed by endpoints that send mail)
     SMTP_SERVER: str | None = None
     SMTP_PORT: int = 587

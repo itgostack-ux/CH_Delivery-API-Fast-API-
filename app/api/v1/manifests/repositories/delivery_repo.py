@@ -52,6 +52,49 @@ class DeliveryRepository:
             conn.close()
 
     @staticmethod
+    def get_store_location(store_code):
+        """Drop point of a CH Store (what the manifest's destination_store links to).
+
+        The geocode lives in custom_latitude/custom_longitude (text); the newer
+        latitude/longitude floats are used when the text fields are empty."""
+
+        if not store_code:
+            return None
+
+        conn = get_connection()
+
+        try:
+            with conn.cursor() as cursor:
+
+                cursor.execute("""
+                    SELECT name AS store, store_name, address, city, pincode,
+                           NULLIF(TRIM(custom_latitude), '') AS lat_text,
+                           NULLIF(TRIM(custom_longitude), '') AS lng_text,
+                           latitude, longitude, google_maps_url
+                    FROM `tabCH Store`
+                    WHERE name = %s
+                """, (store_code,))
+
+                row = cursor.fetchone()
+
+        finally:
+            conn.close()
+
+        if not row:
+            return None
+
+        def _num(text, flt):
+            try:
+                value = float(text) if text is not None else float(flt or 0)
+            except (TypeError, ValueError):
+                value = 0.0
+            return value or None
+
+        row["latitude"] = _num(row.pop("lat_text"), row["latitude"])
+        row["longitude"] = _num(row.pop("lng_text"), row["longitude"])
+        return row
+
+    @staticmethod
     def get_manifest(manifest_id):
 
         conn = get_connection()
