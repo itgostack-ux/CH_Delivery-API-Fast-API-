@@ -40,10 +40,13 @@ def delivery_pending(user: dict = Depends(driver_only)):
     return ManifestService.delivery_pending(user)
 
 
-@router.get("/delivered", response_model=PendingManifestsResponse, summary="Delivered tab: my completed deliveries (last 30 days)")
-def delivered(user: dict = Depends(driver_only)):
+@router.get("/delivered", response_model=PendingManifestsResponse, summary="Delivered tab: my completed deliveries (default last 30 days)")
+def delivered(
+    days: int = Query(30, ge=0, le=3650, description="History window in days; 0 = all time"),
+    user: dict = Depends(driver_only),
+):
 
-    return ManifestService.delivered(user)
+    return ManifestService.delivered(user, days)
 
 
 @router.get("/reject-reasons", response_model=RejectReasonsResponse, summary="Allowed rejection reasons (public)")
