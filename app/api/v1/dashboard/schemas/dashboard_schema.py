@@ -41,6 +41,14 @@ class OrderItem(BaseModel):
     material_request: str | None = None
     box_labels: list[str] = []          # QR labels on the boxes, e.g. GFTNDC26000355-B01
     qr: str | None = None               # first box label = what to send as `qr` at pickup/deliver
+    # per-leg progress (this order only) - use `stage` to pick the tab
+    stage: str = "pickup_pending"       # pickup_pending | in_transit | delivered | rejected
+    leg_accepted: bool = False
+    leg_accepted_at: datetime | None = None
+    pickup_captured_at: datetime | None = None
+    pickup_scanned_qr: str | None = None
+    delivery_captured_at: datetime | None = None
+    delivery_receiver_name: str | None = None
 
 
 class ManifestItem(BaseModel):

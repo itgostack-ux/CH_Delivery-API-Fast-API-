@@ -1,4 +1,5 @@
 from app.db.session import get_connection
+from ..services.stage import LEG_COLUMNS
 
 
 class ManifestRepository:
@@ -108,6 +109,7 @@ class ManifestRepository:
                         tm.pickup_datetime,
                         tm.delivery_datetime,
                         tm.receiver_name,
+                        {LEG_COLUMNS},
                         (SELECT GROUP_CONCAT(p.package_label ORDER BY p.idx SEPARATOR ',')
                            FROM `tabCH Stock Entry Package` p
                            WHERE p.parent = tmi.stock_entry AND p.parenttype = 'Stock Entry') AS box_labels

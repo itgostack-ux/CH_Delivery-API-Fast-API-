@@ -26,10 +26,18 @@ class PendingManifest(BaseModel):
     estimated_delivery_date: date | None = None
     box_labels: list[str] = []          # QR labels on the boxes, e.g. GFTNDC26000355-B01
     qr: str | None = None               # first box label = what to send as `qr` at pickup/deliver
-    driver_accepted_at: datetime | None = None
+    driver_accepted_at: datetime | None = None      # manifest-level (all legs accepted)
     pickup_datetime: datetime | None = None
     delivery_datetime: datetime | None = None
     receiver_name: str | None = None
+    # per-leg (this shipment only) - what the ERP driver app uses for its tabs
+    stage: str = "pickup_pending"                   # pickup_pending | in_transit | delivered | rejected
+    leg_accepted: bool = False                      # Accept Shipment done for THIS leg
+    leg_accepted_at: datetime | None = None
+    pickup_captured_at: datetime | None = None
+    pickup_scanned_qr: str | None = None
+    delivery_captured_at: datetime | None = None
+    delivery_receiver_name: str | None = None
 
 
 class PendingManifestsResponse(BaseModel):

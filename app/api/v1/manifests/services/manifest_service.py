@@ -2,6 +2,7 @@ from fastapi import HTTPException
 
 from app.core.frappe_client import FrappeClient
 from ..repositories.manifest_repo import ManifestRepository
+from .stage import DELIVERED, IN_TRANSIT, leg_stage
 
 # Rules copied from the ERP (ch_logistics CH Transfer Manifest.reject_manifest)
 REJECTABLE_STATUSES = ("Assigned", "Pickup Started", "In Transit")
@@ -61,33 +62,51 @@ class ManifestService:
 
         return manifest
 
+    ACTIVE = ("Assigned", "Pickup Started", "In Transit")
+    DONE = ("Delivered", "Partially Received", "Received", "Closed")
+
     @staticmethod
-    def _shipments(user, statuses, days=None):
+    def _shipments(user, statuses, days=None, stages=None):
+        """One row per shipment leg. `stages` keeps only legs whose per-leg
+        stage (see stage.py) is in the set - that is how the ERP driver app
+        splits its tabs: an accepted leg of a still-"Assigned" manifest is
+        already Delivery Pending while its sibling is still Pickup Pending."""
 
         driver_ids = ManifestService._driver_ids_for(user)
         rows = ManifestRepository.get_shipments_for_drivers(driver_ids, statuses, days)
+        out = []
 
         for row in rows:
             labels = [x for x in (row.pop("box_labels", None) or "").split(",") if x]
             row["box_labels"] = labels
             row["qr"] = labels[0] if labels else None
+            row["stage"] = leg_stage(row["status"], row)
+            row["leg_accepted"] = bool(row.get("leg_accepted_at"))
 
-        return {"count": len(rows), "data": rows}
+            if stages is None or row["stage"] in stages:
+                out.append(row)
+
+        return {"count": len(out), "data": out}
 
     @staticmethod
     def pending(user):
-        """Pickup Pending tab (ERP driver app)."""
+        """Pickup Pending tab: legs the driver still has to Accept & Pick Up
+        (or Reject). Like the ERP, an already-accepted sibling leg is listed
+        too, flagged leg_accepted=true, so the card can show ACCEPTED."""
         return ManifestService._shipments(user, ("Assigned",))
 
     @staticmethod
     def delivery_pending(user):
-        """Delivery Pending tab: picked up, on the vehicle, not yet delivered."""
-        return ManifestService._shipments(user, ("In Transit", "Pickup Started"))
+        """Delivery Pending tab: every leg that is on the vehicle - legs of
+        In Transit / Pickup Started manifests plus individually accepted legs
+        of manifests that are still Assigned."""
+        return ManifestService._shipments(user, ManifestService.ACTIVE, stages={IN_TRANSIT})
 
     @staticmethod
     def delivered(user, days=30):
-        """Delivered tab: history of completed deliveries."""
-        return ManifestService._shipments(user, ("Delivered", "Partially Received", "Received", "Closed"), days)
+        """Delivered tab: delivered legs (manifest delivered, or the leg's own
+        delivery captured while siblings are still out)."""
+        return ManifestService._shipments(user, ManifestService.ACTIVE + ManifestService.DONE, days, stages={DELIVERED})
 
     @staticmethod
     def reject_reasons():

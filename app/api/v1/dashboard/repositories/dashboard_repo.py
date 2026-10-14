@@ -1,4 +1,5 @@
 from app.db.session import get_connection
+from app.api.v1.manifests.services.stage import LEG_COLUMNS
 
 
 # A manifest counts as "today's work" when its trip runs today, when it was
@@ -190,6 +191,7 @@ class DashboardRepository:
                         COALESCE(tmi.total_qty, se.custom_total_qty, 0) AS qty,
                         se.custom_delivery_challan AS delivery_challan,
                         COALESCE(tmi.material_request, se.custom_material_request) AS material_request,
+                        {LEG_COLUMNS},
                         (SELECT GROUP_CONCAT(p.package_label ORDER BY p.idx SEPARATOR ',')
                            FROM `tabCH Stock Entry Package` p
                            WHERE p.parent = tmi.stock_entry AND p.parenttype = 'Stock Entry') AS box_labels

@@ -22,6 +22,8 @@ class UserInfo(BaseModel):
     mobile_no: str = ""
     roles: list[str]
     primary_role: str
+    driver_linked: bool = False       # True only when a Driver record has user = this email
+    driver_ids: list[str] = []        # the Driver records (HR-DRI-...) the driver tabs will use
 
 
 class LoginResponse(BaseModel):

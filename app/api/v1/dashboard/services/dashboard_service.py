@@ -2,6 +2,7 @@ from datetime import date
 
 from fastapi import HTTPException
 
+from app.api.v1.manifests.services.stage import leg_stage
 from ..repositories.dashboard_repo import DashboardRepository
 
 MANAGER_ROLES = {"System Manager", "Delivery Manager"}
@@ -82,6 +83,8 @@ class DashboardService:
                 labels = [x for x in (order.pop("box_labels", None) or "").split(",") if x]
                 order["box_labels"] = labels
                 order["qr"] = labels[0] if labels else None
+                order["stage"] = leg_stage(manifest["status"], order)
+                order["leg_accepted"] = bool(order.get("leg_accepted_at"))
 
         return {
             "scope": {

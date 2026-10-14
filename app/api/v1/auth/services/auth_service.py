@@ -149,7 +149,12 @@ class AuthService:
 
         roles = AuthRepository.get_user_roles(user["name"])
 
-        if AuthRepository.is_driver(user["name"]) and "Driver" not in roles:
+        # Driver records linked to this user (tabDriver.user = email). The
+        # Driver role is granted from them, but a user may also hold the role
+        # explicitly without any record - then driver tabs answer 403.
+        driver_ids = AuthRepository.get_driver_ids_for_user(user["name"])
+
+        if driver_ids and "Driver" not in roles:
             roles.append("Driver")
 
         granted = [r for r in ROLE_PRIORITY if r in roles]
@@ -181,6 +186,8 @@ class AuthService:
                 "full_name": user["full_name"],
                 "mobile_no": user["mobile_no"] or "",
                 "roles": granted,
-                "primary_role": primary_role
+                "primary_role": primary_role,
+                "driver_linked": bool(driver_ids),
+                "driver_ids": driver_ids,
             }
         }
