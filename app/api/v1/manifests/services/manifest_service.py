@@ -1,5 +1,7 @@
 from fastapi import HTTPException
 
+from app.core.config import settings
+
 from app.core.frappe_client import FrappeClient
 from ..repositories.manifest_repo import ManifestRepository
 from .stage import DELIVERED, IN_TRANSIT, leg_stage
@@ -160,6 +162,14 @@ class ManifestService:
           * reason must match the stage (pickup vs in-transit list)
           * both proof photos required, and different from each other
         """
+
+        if not settings.DRIVER_CAN_REJECT:
+            # ch_logistics @ logistics-testing: DRIVER_CAN_REJECT = false in the
+            # driver page - rejections are raised by dispatch, not the driver.
+            raise HTTPException(status_code=403, detail={
+                "code": "DRIVER_REJECT_DISABLED",
+                "message": "Rejecting from the driver app is switched off; ask dispatch to reject or hold this shipment",
+            })
 
         manifest_id = ManifestService.resolve(any_id)
         driver_ids = ManifestService._driver_ids_for(user)

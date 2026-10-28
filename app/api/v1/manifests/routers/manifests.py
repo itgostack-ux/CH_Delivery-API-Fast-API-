@@ -12,6 +12,7 @@ from ..schemas.manifest_schema import (
     RejectReasonsResponse,
     SendOtpRequest,
     SendOtpResponse,
+    StoreDeliverResponse,
 )
 from ..services.delivery_service import DeliveryService
 from ..services.manifest_service import ManifestService
@@ -95,10 +96,11 @@ def pickup(
     gps_accuracy_m: float | None = Form(None, description="GPS accuracy in metres, e.g. 7.2"),
     location_note: str | None = Form(None, description="Only when no GPS: e.g. 'Phone Has No GPS'"),
     override_empty_stops: bool = Form(False, description="Set true after the driver confirms starting a trip that has empty stops (ERP asks the same)"),
+    geofence_override_reason: str | None = Form(None, max_length=300, description="Only after a GEOFENCE_OUT_OF_RANGE / GPS_IMPRECISE answer: the driver's reason for confirming they are at the pickup point (recorded on the manifest)"),
     user: dict = Depends(driver_only),
 ):
 
-    return DeliveryService.pickup(user, manifest_id, qr, [photo1, photo2, photo3], latitude, longitude, gps_accuracy_m, location_note, additional_qrs, override_empty_stops)
+    return DeliveryService.pickup(user, manifest_id, qr, [photo1, photo2, photo3], latitude, longitude, gps_accuracy_m, location_note, additional_qrs, override_empty_stops, geofence_override_reason)
 
 
 @router.get(
@@ -146,7 +148,7 @@ def reached(
 )
 def send_delivery_otp(manifest_id: str, data: SendOtpRequest, user: dict = Depends(driver_only)):
 
-    return DeliveryService.send_delivery_otp(user, manifest_id, data.receiver)
+    return DeliveryService.send_delivery_otp(user, manifest_id, data.receiver, data.stock_entries)
 
 
 @router.post(
@@ -168,7 +170,35 @@ def deliver(
     gps_accuracy_m: float | None = Form(None, description="GPS accuracy in metres"),
     location_note: str | None = Form(None, description="Only when no GPS and the store has no geocode: e.g. 'Location Permission Blocked on Device'"),
     actual_distance_km: float | None = Form(None, ge=0, description="Actual Distance (km) driven for this delivery - optional"),
+    geofence_override_reason: str | None = Form(None, max_length=300, description="Only after a GEOFENCE_OUT_OF_RANGE / GPS_IMPRECISE answer: the driver's reason for confirming they are at the store (recorded on the manifest; a far miss still needs dispatch)"),
     user: dict = Depends(driver_only),
 ):
 
-    return DeliveryService.deliver(user, manifest_id, qr, receiver_name, otp, [photo1, photo2, photo3], latitude, longitude, gps_accuracy_m, location_note, additional_qrs, actual_distance_km)
+    return DeliveryService.deliver(user, manifest_id, qr, receiver_name, otp, [photo1, photo2, photo3], latitude, longitude, gps_accuracy_m, location_note, additional_qrs, actual_distance_km, geofence_override_reason)
+
+
+@router.post(
+    "/{manifest_id}/deliver-store",
+    response_model=StoreDeliverResponse,
+    summary="Store drop: deliver every picked-up order going to this store with ONE OTP (ERP driver_complete_store_delivery)",
+)
+def deliver_store(
+    manifest_id: str,
+    qrs: str = Form(..., description="Box labels of ALL orders being dropped, comma-separated (one or more per order, from GET /boxes)"),
+    receiver_name: str = Form(..., description="Receiver name exactly as returned by GET /receivers"),
+    otp: str = Form(..., min_length=4, max_length=8, description="The single OTP sent via POST /delivery-otp with stock_entries"),
+    stock_entries: str | None = Form(None, description="Optional: comma-separated shipment ids to deliver (default: every picked-up order of this driver going to the same store)"),
+    photo1: UploadFile = File(..., description="Photo of the delivery (required)"),
+    photo2: UploadFile | None = File(None),
+    photo3: UploadFile | None = File(None),
+    latitude: float | None = Form(None),
+    longitude: float | None = Form(None),
+    gps_accuracy_m: float | None = Form(None),
+    location_note: str | None = Form(None, description="Only when no GPS: reason (CH Logistics Settings must allow it)"),
+    geofence_override_reason: str | None = Form(None, max_length=300),
+    user: dict = Depends(driver_only),
+):
+    """One code, many orders: the ERP verifies the OTP once per manifest in the
+    group and then records each order with its own scan, photo and GPS."""
+
+    return DeliveryService.deliver_store(user, manifest_id, qrs, receiver_name, otp, [photo1, photo2, photo3], latitude, longitude, gps_accuracy_m, location_note, stock_entries, geofence_override_reason)

@@ -14,8 +14,10 @@ DELIVERED = "delivered"
 REJECTED = "rejected"
 
 _DELIVERED_MANIFEST = {"delivered", "partially received", "received", "closed"}
-_REJECTED_MANIFEST = {"rejected", "cancelled", "reverted", "recall initiated", "recalled"}
-_TRANSIT_MANIFEST = {"in transit", "pickup started"}
+_REJECTED_MANIFEST = {"rejected", "cancelled", "reverted", "recalled"}
+# get_driver_assignments buckets "Recall Initiated" with In Transit: the goods
+# are still on the vehicle and the driver has to bring them back.
+_TRANSIT_MANIFEST = {"in transit", "pickup started", "recall initiated"}
 
 
 def _norm(value):

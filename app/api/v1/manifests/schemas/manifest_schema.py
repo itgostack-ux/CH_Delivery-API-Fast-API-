@@ -125,6 +125,8 @@ class PickupResponse(BaseModel):
     manifest_id: str
     shipment_id: str | None = None
     status: str
+    leg_accepted_at: datetime | None = None          # this shipment's own pickup stamp
+    manifest_fully_accepted: bool | None = None      # every shipment of the manifest picked up
     trip: str | None = None
     pickup_datetime: datetime | None = None
     location: Location
@@ -134,6 +136,7 @@ class PickupResponse(BaseModel):
 
 class SendOtpRequest(BaseModel):
     receiver: str = Field(description="Receiver id or name from GET /manifests/{id}/receivers (free text if the store has no roster)")
+    stock_entries: str | None = Field(None, description="Optional: comma-separated shipment ids (GFTNMT...) going to the SAME store to cover with ONE OTP (ERP store drop). Leave empty for a per-shipment OTP.")
 
 
 class SendOtpResponse(BaseModel):
@@ -144,6 +147,7 @@ class SendOtpResponse(BaseModel):
     sent_to: list[str]
     email_status: str = "unknown"       # sent | not_queued | not_sent | error ...
     warning: str | None = None
+    covers_stock_entries: list[str] = []
     resend_after_seconds: int
 
 
@@ -154,11 +158,27 @@ class DeliverResponse(BaseModel):
     shipment_id: str | None = None
     status: str
     trip: str | None = None
+    leg_delivered_at: datetime | None = None         # this shipment's own delivery stamp
+    manifest_fully_delivered: bool = False           # every shipment of the manifest delivered
     delivery_datetime: datetime | None = None
     receiver_name: str | None = None
     location: Location
     geofence: Geofence | None = None
     actual_distance_km: float | None = None
+    photos: list[str]
+    erp: Any = None
+
+
+class StoreDeliverResponse(BaseModel):
+    success: bool = True
+    message: str
+    manifest_id: str
+    shipment_id: str | None = None
+    delivered: list[str] = []                        # shipment ids delivered with the one OTP
+    manifests: dict[str, str | None] = {}            # manifest -> status afterwards
+    receiver_name: str | None = None
+    location: Location
+    geofence: Geofence | None = None
     photos: list[str]
     erp: Any = None
 

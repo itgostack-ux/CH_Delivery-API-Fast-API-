@@ -52,13 +52,13 @@ class DeliveryRepository:
             conn.close()
 
     @staticmethod
-    def get_store_location(store_code):
-        """Drop point of a CH Store (what the manifest's destination_store links to).
+    def get_store_location(store_code, warehouse=None):
+        """Drop point, resolved the way ch_logistics does it
+        (optimizer._warehouse_coords_map): the leg's Warehouse coordinates
+        first, then the linked CH Store's latitude/longitude, then the store's
+        older custom_latitude/custom_longitude text fields."""
 
-        The geocode lives in custom_latitude/custom_longitude (text); the newer
-        latitude/longitude floats are used when the text fields are empty."""
-
-        if not store_code:
+        if not store_code and not warehouse:
             return None
 
         conn = get_connection()
@@ -66,32 +66,64 @@ class DeliveryRepository:
         try:
             with conn.cursor() as cursor:
 
-                cursor.execute("""
-                    SELECT name AS store, store_name, address, city, pincode,
-                           NULLIF(TRIM(custom_latitude), '') AS lat_text,
-                           NULLIF(TRIM(custom_longitude), '') AS lng_text,
-                           latitude, longitude, google_maps_url
-                    FROM `tabCH Store`
-                    WHERE name = %s
-                """, (store_code,))
+                wh = None
+                if warehouse:
+                    cursor.execute("""
+                        SELECT name, custom_latitude, custom_longitude, ch_store
+                        FROM tabWarehouse WHERE name = %s
+                    """, (warehouse,))
+                    wh = cursor.fetchone()
 
-                row = cursor.fetchone()
+                store_key = store_code or (wh or {}).get("ch_store")
+                row = None
+                if store_key:
+                    cursor.execute("""
+                        SELECT name AS store, store_name, address, city, pincode,
+                               NULLIF(TRIM(custom_latitude), '') AS lat_text,
+                               NULLIF(TRIM(custom_longitude), '') AS lng_text,
+                               latitude, longitude, google_maps_url
+                        FROM `tabCH Store`
+                        WHERE name = %s
+                    """, (store_key,))
+                    row = cursor.fetchone()
+                if row is None and warehouse:
+                    cursor.execute("""
+                        SELECT name AS store, store_name, address, city, pincode,
+                               NULLIF(TRIM(custom_latitude), '') AS lat_text,
+                               NULLIF(TRIM(custom_longitude), '') AS lng_text,
+                               latitude, longitude, google_maps_url
+                        FROM `tabCH Store`
+                        WHERE warehouse = %s AND disabled = 0
+                        LIMIT 1
+                    """, (warehouse,))
+                    row = cursor.fetchone()
 
         finally:
             conn.close()
 
-        if not row:
+        if not row and not wh:
             return None
 
-        def _num(text, flt):
-            try:
-                value = float(text) if text is not None else float(flt or 0)
-            except (TypeError, ValueError):
-                value = 0.0
-            return value or None
+        row = row or {"store": store_code, "store_name": None, "address": None, "city": None,
+                      "pincode": None, "lat_text": None, "lng_text": None,
+                      "latitude": None, "longitude": None, "google_maps_url": None}
 
-        row["latitude"] = _num(row.pop("lat_text"), row["latitude"])
-        row["longitude"] = _num(row.pop("lng_text"), row["longitude"])
+        def _num(*candidates):
+            for c in candidates:
+                try:
+                    v = float(c) if c not in (None, "") else 0.0
+                except (TypeError, ValueError):
+                    v = 0.0
+                if v:
+                    return v
+            return None
+
+        lat_text, lng_text = row.pop("lat_text"), row.pop("lng_text")
+        row["latitude"] = _num((wh or {}).get("custom_latitude"), row.get("latitude"), lat_text)
+        row["longitude"] = _num((wh or {}).get("custom_longitude"), row.get("longitude"), lng_text)
+        row["warehouse"] = warehouse
+        row["source"] = ("warehouse" if (wh or {}).get("custom_latitude") else
+                         "store" if row.get("latitude") else None)
         return row
 
     @staticmethod
@@ -118,7 +150,8 @@ class DeliveryRepository:
 
                 if manifest:
                     cursor.execute("""
-                        SELECT stock_entry, from_warehouse, to_warehouse, transfer_status
+                        SELECT stock_entry, from_warehouse, to_warehouse, transfer_status,
+                               driver_accepted_at, pickup_captured_at, delivery_captured_at
                         FROM `tabCH Transfer Manifest Item`
                         WHERE parent = %s
                         ORDER BY idx

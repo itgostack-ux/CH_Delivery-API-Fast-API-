@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     # destination store's lat/lng (CH Store) to call /deliver. 0 disables it.
     DELIVERY_GEOFENCE_M: int = 50
 
+    # ch_logistics (logistics-testing branch) hides Reject from drivers
+    # (DRIVER_CAN_REJECT = false in the driver page); rejections are now
+    # raised by dispatch. Set true to expose POST /manifests/{id}/reject again.
+    DRIVER_CAN_REJECT: bool = False
+
     # SMTP (optional: only needed by endpoints that send mail)
     SMTP_SERVER: str | None = None
     SMTP_PORT: int = 587
