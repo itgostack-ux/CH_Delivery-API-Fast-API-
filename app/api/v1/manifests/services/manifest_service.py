@@ -68,14 +68,15 @@ class ManifestService:
     DONE = ("Delivered", "Partially Received", "Received", "Closed")
 
     @staticmethod
-    def _shipments(user, statuses, days=None, stages=None):
+    def _shipments(user, statuses, days=None, stages=None, limit=None, offset=0):
         """One row per shipment leg. `stages` keeps only legs whose per-leg
         stage (see stage.py) is in the set - that is how the ERP driver app
         splits its tabs: an accepted leg of a still-"Assigned" manifest is
         already Delivery Pending while its sibling is still Pickup Pending."""
 
         driver_ids = ManifestService._driver_ids_for(user)
-        rows = ManifestRepository.get_shipments_for_drivers(driver_ids, statuses, days)
+        # Stage filtering happens here, so fetch the whole window and page in memory
+        rows = ManifestRepository.get_shipments_for_drivers(driver_ids, statuses, days, limit=5000)
         out = []
 
         for row in rows:
@@ -88,7 +89,11 @@ class ManifestService:
             if stages is None or row["stage"] in stages:
                 out.append(row)
 
-        return {"count": len(out), "data": out}
+        total = len(out)
+        if limit is not None:
+            out = out[offset: offset + limit]
+
+        return {"count": len(out), "total": total, "offset": offset, "limit": limit, "data": out}
 
     @staticmethod
     def pending(user):
@@ -105,10 +110,11 @@ class ManifestService:
         return ManifestService._shipments(user, ManifestService.ACTIVE, stages={IN_TRANSIT})
 
     @staticmethod
-    def delivered(user, days=30):
-        """Delivered tab: delivered legs (manifest delivered, or the leg's own
-        delivery captured while siblings are still out)."""
-        return ManifestService._shipments(user, ManifestService.ACTIVE + ManifestService.DONE, days, stages={DELIVERED})
+    def delivered(user, days=30, limit=200, offset=0):
+        """Delivered tab / full history: delivered legs (manifest Delivered,
+        Received or Closed, or the leg's own delivery captured while siblings
+        are still out). days=0 = all time; page with limit/offset."""
+        return ManifestService._shipments(user, ManifestService.ACTIVE + ManifestService.DONE, days, stages={DELIVERED}, limit=limit, offset=offset)
 
     @staticmethod
     def reject_reasons():

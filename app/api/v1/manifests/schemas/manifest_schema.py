@@ -42,7 +42,10 @@ class PendingManifest(BaseModel):
 
 class PendingManifestsResponse(BaseModel):
     success: bool = True
-    count: int
+    count: int                        # rows in this response
+    total: int | None = None          # rows matching in the whole window (delivered history)
+    offset: int | None = None
+    limit: int | None = None
     data: list[PendingManifest]
 
 
@@ -132,6 +135,31 @@ class PickupResponse(BaseModel):
     location: Location
     photos: list[str]
     erp: Any = None            # raw result of the ERP method, for debugging
+
+
+class PickupAllResult(BaseModel):
+    shipment_id: str
+    status: str                       # accepted | already_accepted | not_scanned | failed
+    message: str | None = None
+    code: str | None = None
+    scanned: list[str] = []
+    accepted_at: datetime | None = None
+    erp: Any = None
+
+
+class PickupAllResponse(BaseModel):
+    success: bool = True
+    message: str
+    manifest_id: str
+    status: str
+    trip: str | None = None
+    accepted: list[str] = []           # shipments accepted by this call
+    remaining: list[str] = []          # shipments of the manifest still waiting for pickup
+    manifest_fully_accepted: bool = False
+    pickup_datetime: datetime | None = None
+    location: Location
+    photos: list[str]
+    results: list[PickupAllResult] = []
 
 
 class SendOtpRequest(BaseModel):

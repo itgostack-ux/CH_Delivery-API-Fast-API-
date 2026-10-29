@@ -30,6 +30,38 @@ class DeliveryRepository:
             conn.close()
 
     @staticmethod
+    def leg_lookup(manifest_id):
+        """Every code that identifies a shipment leg of this manifest, lower-cased:
+        the stock entry (GFTNMT...), its delivery challan (GFTNDC...) and each
+        box label (GFTNDC...-B01) -> stock entry."""
+
+        conn = get_connection()
+
+        try:
+            with conn.cursor() as cursor:
+
+                cursor.execute("""
+                    SELECT tmi.stock_entry, se.custom_delivery_challan AS challan, p.package_label
+                    FROM `tabCH Transfer Manifest Item` tmi
+                    LEFT JOIN `tabStock Entry` se ON se.name = tmi.stock_entry
+                    LEFT JOIN `tabCH Stock Entry Package` p
+                           ON p.parent = tmi.stock_entry AND p.parenttype = 'Stock Entry'
+                    WHERE tmi.parent = %s
+                    ORDER BY tmi.idx, p.idx
+                """, (manifest_id,))
+
+                lookup = {}
+                for row in cursor.fetchall():
+                    se = row["stock_entry"]
+                    for code in (se, row["challan"], row["package_label"]):
+                        if code:
+                            lookup.setdefault(code.strip().lower(), se)
+                return lookup
+
+        finally:
+            conn.close()
+
+    @staticmethod
     def get_item_row_name(manifest_id, stock_entry):
         """Row id of the shipment inside the manifest (tabCH Transfer Manifest Item)."""
 

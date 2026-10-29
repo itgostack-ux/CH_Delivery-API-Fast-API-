@@ -6,6 +6,7 @@ from ..schemas.manifest_schema import (
     DeliverResponse,
     ManifestActionResponse,  # noqa: F401 (reject response)
     PendingManifestsResponse,
+    PickupAllResponse,
     PickupResponse,
     ReachedResponse,
     ReceiversResponse,
@@ -41,13 +42,17 @@ def delivery_pending(user: dict = Depends(driver_only)):
     return ManifestService.delivery_pending(user)
 
 
-@router.get("/delivered", response_model=PendingManifestsResponse, summary="Delivered tab: my completed deliveries (default last 30 days)")
+@router.get("/delivered", response_model=PendingManifestsResponse, summary="Delivered orders: my completed deliveries, one row per shipment (days=0 for the full history, paged)")
 def delivered(
     days: int = Query(30, ge=0, le=3650, description="History window in days; 0 = all time"),
+    limit: int = Query(200, ge=1, le=1000, description="Page size"),
+    offset: int = Query(0, ge=0, description="Rows to skip (page 2 = offset=limit)"),
     user: dict = Depends(driver_only),
 ):
+    """`total` is the number of delivered shipments in the window, so the app
+    can show it as the driver's delivery count and page through the list."""
 
-    return ManifestService.delivered(user, days)
+    return ManifestService.delivered(user, days, limit, offset)
 
 
 @router.get("/reject-reasons", response_model=RejectReasonsResponse, summary="Allowed rejection reasons (public)")
@@ -101,6 +106,33 @@ def pickup(
 ):
 
     return DeliveryService.pickup(user, manifest_id, qr, [photo1, photo2, photo3], latitude, longitude, gps_accuracy_m, location_note, additional_qrs, override_empty_stops, geofence_override_reason)
+
+
+@router.post(
+    "/{manifest_id}/pickup-all",
+    response_model=PickupAllResponse,
+    summary="Accept & Pick Up several shipments of one manifest at once: scan all their box labels, one photo, one GPS fix",
+)
+def pickup_all(
+    manifest_id: str,
+    qrs: str = Form(..., description="All scanned box labels, comma-separated, e.g. GFTNDC26002073-B01,GFTNDC26002084-B01 (every box of each shipment you want to accept)"),
+    photo1: UploadFile = File(..., description="Photo of the goods (required, reused for every shipment)"),
+    photo2: UploadFile | None = File(None),
+    photo3: UploadFile | None = File(None),
+    latitude: float | None = Form(None, description="GPS latitude"),
+    longitude: float | None = Form(None, description="GPS longitude"),
+    gps_accuracy_m: float | None = Form(None),
+    location_note: str | None = Form(None, description="Only when no GPS (CH Logistics Settings must allow it)"),
+    override_empty_stops: bool = Form(False, description="Set true after the driver confirms starting a trip that has empty stops"),
+    geofence_override_reason: str | None = Form(None, max_length=300),
+    user: dict = Depends(driver_only),
+):
+    """Each shipment is still accepted separately in ERPNext (its rule), so the
+    response lists a verdict per shipment: accepted, already_accepted,
+    not_scanned or failed. Shipments whose boxes were not all scanned fail
+    with SCAN_REQUIRED while the others go through."""
+
+    return DeliveryService.pickup_all(user, manifest_id, qrs, [photo1, photo2, photo3], latitude, longitude, gps_accuracy_m, location_note, override_empty_stops, geofence_override_reason)
 
 
 @router.get(

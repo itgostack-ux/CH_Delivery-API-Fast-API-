@@ -138,13 +138,57 @@ class DeliveryService:
         if manifest["driver"] not in driver_ids:
             raise HTTPException(status_code=403, detail="This manifest is not assigned to you")
 
-        # which shipment (leg) was addressed - the one named, else the first
+        # Which shipment (leg) was addressed: the path id may be the stock
+        # entry (GFTNMT...), its challan (GFTNDC...) or a box label; a plain
+        # manifest id leaves it open, and the caller then picks the leg from
+        # the scanned box label (see _select_leg).
         legs = [i["stock_entry"] for i in manifest["items"] if i["stock_entry"]]
-        wanted = any_id.strip()
-        manifest["stock_entry"] = wanted if wanted in legs else (legs[0] if legs else None)
+        lookup = DeliveryRepository.leg_lookup(manifest_id) if legs else {}
+        wanted = lookup.get(any_id.strip().lower())
+        manifest["stock_entry"] = wanted or (legs[0] if legs else None)
+        manifest["leg_explicit"] = wanted is not None
         manifest["legs"] = legs
+        manifest["leg_lookup"] = lookup
 
         return manifest
+
+    @staticmethod
+    def _select_leg(manifest, scans=None, want=None):
+        """Pin manifest["stock_entry"] to the right leg when the path id was
+        only the manifest.
+
+        scans: box labels the driver scanned -> the leg they belong to (any
+               label of another shipment is refused, like the ERP's strict
+               box scan).
+        want:  a predicate on the leg row, used when there is nothing to
+               scan (OTP): e.g. "accepted and not yet delivered"."""
+
+        if manifest.get("leg_explicit") or len(manifest.get("legs") or []) <= 1:
+            return manifest["stock_entry"]
+
+        lookup = manifest.get("leg_lookup") or {}
+
+        if scans:
+            found = {lookup.get(str(s).strip().lower()) for s in scans if str(s).strip()}
+            found.discard(None)
+            unknown = [s for s in scans if str(s).strip() and str(s).strip().lower() not in lookup]
+            if unknown or len(found) != 1:
+                raise HTTPException(status_code=422, detail={
+                    "code": "SCAN_REQUIRED",
+                    "message": (f"{', '.join(unknown)} is not a box of manifest {manifest['manifest_id']}" if unknown
+                                else "Scanned labels belong to different shipments; send one shipment per call, or use the shipment id in the URL"),
+                    "shipments": {i["stock_entry"]: [c for c, se in lookup.items() if se == i["stock_entry"] and "-b" in c] for i in manifest["items"]},
+                })
+            manifest["stock_entry"] = found.pop()
+            return manifest["stock_entry"]
+
+        if want:
+            for item in manifest["items"]:
+                if want(item):
+                    manifest["stock_entry"] = item["stock_entry"]
+                    return manifest["stock_entry"]
+
+        return manifest["stock_entry"]
 
     @staticmethod
     def _upload_photos(user, manifest_id, uploads, stage):
@@ -320,6 +364,7 @@ class DeliveryService:
         geofence_override_reason = _clean_note(geofence_override_reason)
 
         manifest = DeliveryService._owned(user, any_id)
+        DeliveryService._select_leg(manifest, [qr] + list(additional_qrs or []))
         mid, se = manifest["manifest_id"], manifest["stock_entry"]
         leg = DeliveryService._leg(manifest) or {}
 
@@ -383,6 +428,129 @@ class DeliveryService:
         }
 
     # ------------------------------------------------------------------
+    # Accept & Pick Up every shipment of the manifest in one go
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def pickup_all(user, any_id, qrs, photos, lat, lng, accuracy, location_note,
+                   override_empty_stops=False, geofence_override_reason=None):
+        """Scan all the boxes on the trolley, one photo, one GPS fix: every
+        shipment of the manifest whose boxes were scanned is accepted.
+
+        The ERP accepts one shipment per call (driver_accept_manifest_row) and
+        insists that EVERY box of a shipment is scanned, so the labels are
+        grouped per shipment here and sent one shipment at a time; the photo
+        is uploaded once and reused. Each shipment gets its own verdict so a
+        single bad scan does not hide the others."""
+
+        scans = _split_qrs(qrs)
+        location_note = _clean_note(location_note)
+        geofence_override_reason = _clean_note(geofence_override_reason)
+
+        if not scans:
+            raise HTTPException(status_code=422, detail={"code": "SCAN_REQUIRED", "message": "Scan the box labels (qrs, comma-separated)"})
+
+        manifest = DeliveryService._owned(user, any_id)
+        mid = manifest["manifest_id"]
+
+        if manifest["status"] != "Assigned":
+            raise HTTPException(status_code=409, detail=f"Pickup not allowed in status '{manifest['status']}'")
+        if not manifest["trip"]:
+            raise HTTPException(status_code=409, detail="Manifest is not attached to a trip yet")
+
+        lookup = manifest.get("leg_lookup") or {}
+        unknown = [s for s in scans if s.lower() not in lookup]
+        if unknown:
+            raise HTTPException(status_code=422, detail={
+                "code": "SCAN_REQUIRED",
+                "message": f"{', '.join(unknown)} is not a box of manifest {mid}",
+                "box_labels": {i["stock_entry"]: sorted(c for c, se in lookup.items() if se == i["stock_entry"] and "-b" in c)
+                               for i in manifest["items"]},
+            })
+
+        # labels per shipment, in scan order
+        per_leg = {}
+        for s in scans:
+            per_leg.setdefault(lookup[s.lower()], []).append(s)
+
+        urls = DeliveryService._upload_photos(user, mid, photos, "pickup")
+
+        results, accepted, trip_started = [], [], False
+        for item in manifest["items"]:
+            se = item["stock_entry"]
+            labels = per_leg.get(se)
+            if not labels:
+                results.append({"shipment_id": se, "status": "not_scanned", "message": "No box of this shipment was scanned"})
+                continue
+            if item.get("driver_accepted_at"):
+                results.append({"shipment_id": se, "status": "already_accepted", "message": "Accepted earlier", "accepted_at": item["driver_accepted_at"]})
+                continue
+
+            args = {
+                "trip": manifest["trip"],
+                "manifest": mid,
+                "stock_entry": se,
+                "pickup_photo": urls[0],
+                "pickup_photos": json.dumps(urls),
+                "scanned_qr": labels[0],
+                "additional_scanned_qrs": json.dumps(labels[1:]),
+                "lat": lat,
+                "lng": lng,
+                "gps_accuracy_m": accuracy,
+                "no_location_reason": location_note if lat is None or lng is None else None,
+                "geofence_override_reason": geofence_override_reason,
+                "override_empty_stops": 1 if (override_empty_stops or trip_started) else 0,
+            }
+            try:
+                erp = _ensure_ok(FrappeClient.call(LOGISTICS + "driver_accept_manifest_row", args, as_user=user["sub"]))
+                trip_started = trip_started or bool((erp or {}).get("trip_started")) if isinstance(erp, dict) else trip_started
+                accepted.append(se)
+                results.append({"shipment_id": se, "status": "accepted", "scanned": labels, "erp": erp})
+            except HTTPException as e:
+                detail = e.detail
+                if "have no shipments assigned" in str(detail) and not override_empty_stops:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "EMPTY_STOPS",
+                        "message": str(detail),
+                        "action": "Ask the driver to confirm, then resend with override_empty_stops=true",
+                        "results": results,
+                    })
+                try:
+                    _erp_error(e)
+                except HTTPException as mapped:
+                    detail = mapped.detail
+                results.append({"shipment_id": se, "status": "failed", "scanned": labels,
+                                "code": detail.get("code") if isinstance(detail, dict) else None,
+                                "message": detail.get("message") if isinstance(detail, dict) else str(detail)})
+
+        updated = DeliveryRepository.get_manifest(mid)
+        failed = [r for r in results if r["status"] == "failed"]
+
+        if not accepted and failed:
+            raise HTTPException(status_code=409, detail={
+                "code": failed[0].get("code") or "PICKUP_FAILED",
+                "message": failed[0]["message"],
+                "results": results,
+            })
+
+        remaining = [i["stock_entry"] for i in updated["items"] if not i.get("driver_accepted_at")]
+
+        return {
+            "message": (f"Accepted {len(accepted)} shipment(s); manifest now In Transit" if updated["status"] == "In Transit"
+                        else f"Accepted {len(accepted)} shipment(s); {len(remaining)} still waiting for pickup"),
+            "manifest_id": mid,
+            "status": updated["status"],
+            "trip": updated["trip"],
+            "accepted": accepted,
+            "remaining": remaining,
+            "manifest_fully_accepted": updated["status"] == "In Transit",
+            "pickup_datetime": updated["pickup_datetime"],
+            "location": {"latitude": lat, "longitude": lng, "accuracy_m": accuracy, "note": location_note},
+            "photos": urls,
+            "results": results,
+        }
+
+    # ------------------------------------------------------------------
     # Send OTP
     # ------------------------------------------------------------------
 
@@ -390,9 +558,14 @@ class DeliveryService:
     def send_delivery_otp(user, any_id, receiver, stock_entries=None):
 
         manifest = DeliveryService._owned(user, any_id)
+        stock_entries = _split_qrs(stock_entries)
+        # No scan at this step: with only a manifest id, take the first leg
+        # that is on the vehicle and not yet delivered (or the first ticked one).
+        DeliveryService._select_leg(
+            manifest, scans=stock_entries[:1] if stock_entries else None,
+            want=lambda i: i.get("driver_accepted_at") and not i.get("delivery_captured_at"))
         mid = manifest["manifest_id"]
         leg = DeliveryService._leg(manifest) or {}
-        stock_entries = _split_qrs(stock_entries)
 
         # Per leg, like the ERP: the shipment must be on the vehicle (accepted)
         # and not yet delivered; the manifest may still be "Assigned".
@@ -481,6 +654,7 @@ class DeliveryService:
             raise HTTPException(status_code=422, detail="actual_distance_km cannot be negative")
 
         manifest = DeliveryService._owned(user, any_id)
+        DeliveryService._select_leg(manifest, [qr] + list(additional_qrs or []))
         mid, se = manifest["manifest_id"], manifest["stock_entry"]
         DeliveryService._deliverable(manifest)
 
@@ -558,6 +732,11 @@ class DeliveryService:
             raise HTTPException(status_code=422, detail={"code": "SCAN_REQUIRED", "message": "Scan the box label of every order being dropped (qrs, comma-separated)"})
 
         manifest = DeliveryService._owned(user, any_id)
+        # The lead leg is any scanned box of THIS manifest (the ERP groups the
+        # rest of the store's orders itself); other manifests' labels are fine here.
+        own = [s for s in scans if str(s).strip().lower() in (manifest.get("leg_lookup") or {})]
+        DeliveryService._select_leg(manifest, own[:1] if own else None,
+                                    want=lambda i: i.get("driver_accepted_at") and not i.get("delivery_captured_at"))
         mid, se = manifest["manifest_id"], manifest["stock_entry"]
         DeliveryService._deliverable(manifest)
 

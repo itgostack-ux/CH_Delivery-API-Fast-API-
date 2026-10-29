@@ -147,6 +147,68 @@ class AuthRepository:
         finally:
             conn.close()
 
+    @staticmethod
+    def get_devices(email):
+        """CH Driver Device rows of this user (token presence only, never the token)."""
+
+        conn = get_connection()
+
+        try:
+            with conn.cursor() as cursor:
+
+                cursor.execute("""
+                    SELECT name, driver, device_id, platform, app_version, is_active,
+                           (fcm_token IS NOT NULL AND fcm_token <> '') AS fcm_token,
+                           registered_on, last_seen
+                    FROM `tabCH Driver Device`
+                    WHERE user = %s
+                    ORDER BY is_active DESC, last_seen DESC
+                """, (email,))
+
+                return cursor.fetchall()
+
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_notifications(email, limit=50, unread_only=False, since_days=30):
+        """Notification Log rows the ERP wrote for this user (every driver push
+        creates one, whatever the push provider)."""
+
+        conn = get_connection()
+
+        try:
+            with conn.cursor() as cursor:
+
+                extra = "AND `read` = 0" if unread_only else ""
+                cursor.execute(f"""
+                    SELECT name, subject AS title, email_content AS body, type,
+                           document_type, document_name, `read`, creation
+                    FROM `tabNotification Log`
+                    WHERE for_user = %s
+                    AND creation >= DATE_SUB(NOW(6), INTERVAL %s DAY)
+                    {extra}
+                    ORDER BY creation DESC
+                    LIMIT %s
+                """, (email, since_days, limit))
+                rows = cursor.fetchall()
+
+                cursor.execute("""
+                    SELECT COUNT(*) AS n FROM `tabNotification Log`
+                    WHERE for_user = %s AND `read` = 0
+                """, (email,))
+                unread = cursor.fetchone()["n"]
+
+                return rows, int(unread)
+
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_device(email, device_id):
+
+        return next((d for d in AuthRepository.get_devices(email) if d["device_id"] == device_id), None)
+
     # ------------------------------------------------------------------
     # OTP log (tabCH OTP Log)
     # ------------------------------------------------------------------
